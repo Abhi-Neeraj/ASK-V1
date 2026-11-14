@@ -1,0 +1,149 @@
+# ASK platform: PostgreSQL, API, processing worker, web app and a TLS reverse proxy.
+#
+# NOT RUN where this was written (no Docker on that machine), so treat it as a careful first draft:
+#   1. cp .env.example .env     and fill every value in (see platform/docs/RUNBOOK.md)
+#   2. docker compose config    must print without errors or warnings
+#   3. docker compose up -d --build
+# The processing worker is off by default (it needs a model provider chosen in .env):
+#   docker compose --profile processing up -d
+#
+# Only the proxy publishes ports. The database, API and web app are reachable on the internal
+# network alone. The API, worker, web app, migration step and proxy cannot gain privileges after they start
+# (no-new-privileges); the database is left as the image ships because its entrypoint needs to change owner.
+
+x-api-environment: &api-environment
+  ASK_ENV: production
+  ASK_SECRET_KEY: ${ASK_SECRET_KEY:?set ASK_SECRET_KEY in .env}
+  ASK_DATABASE_URL: postgresql+psycopg://ask:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/ask
+  ASK_WEB_ORIGINS: ${ASK_WEB_ORIGINS:?set ASK_WEB_ORIGINS in .env}
+  ASK_WEB_BASE_URL: ${ASK_WEB_BASE_URL:?set ASK_WEB_BASE_URL in .env}
+  # Behind the proxy the client address arrives in X-Forwarded-For. The proxy overwrites whatever a
+  # client sends, so this is safe here and only here.
+  ASK_TRUST_FORWARDED_FOR: "true"
+  ASK_TRUSTED_PROXY_HOPS: "1"  # the proxy below is the only one in front of the API
+  ASK_EMAIL_BACKEND: smtp
+  ASK_EMAIL_FROM: ${ASK_EMAIL_FROM:?set ASK_EMAIL_FROM in .env}
+  ASK_SMTP_HOST: ${ASK_SMTP_HOST:?set ASK_SMTP_HOST in .env}
+  ASK_SMTP_PORT: ${ASK_SMTP_PORT:-587}
+  ASK_SMTP_USERNAME: ${ASK_SMTP_USERNAME:-}
+  ASK_SMTP_PASSWORD: ${ASK_SMTP_PASSWORD:-}
+  ASK_CONTACT_RECIPIENT: ${ASK_CONTACT_RECIPIENT:-}
+  ASK_AI_PROVIDER: ${ASK_AI_PROVIDER:-none}
+  ASK_HF_TOKEN: ${ASK_HF_TOKEN:-}
+  ASK_AI_ASR_MODEL: ${ASK_AI_ASR_MODEL:-small}
+  ASK_AI_ASR_DEVICE: ${ASK_AI_ASR_DEVICE:-auto}
+  ASK_AI_ASR_COMPUTE_TYPE: ${ASK_AI_ASR_COMPUTE_TYPE:-int8}
+  ASK_AI_DIARIZER: ${ASK_AI_DIARIZER:-auto}
+  ASK_AI_OFFLINE: ${ASK_AI_OFFLINE:-false}
+  ASK_SPEAKER_MATCH_THRESHOLD: ${ASK_SPEAKER_MATCH_THRESHOLD:-0.5}
+  ASK_SIGNATURE_MATCH_THRESHOLD: ${ASK_SIGNATURE_MATCH_THRESHOLD:-0.5}
+  ASK_SIGNATURE_MATCH_MARGIN: ${ASK_SIGNATURE_MATCH_MARGIN:-0.1}
+  ASK_ANALYSIS_ENGINE: ${ASK_ANALYSIS_ENGINE:-auto}
+  ASK_AI_TEXT_ALLOW_DOWNLOAD: ${ASK_AI_TEXT_ALLOW_DOWNLOAD:-false}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ask
+      POSTGRES_DB: ask
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ask -d ask"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Runs once and exits. The API and worker wait for it to finish, so they never see an old schema.
+  migrate:
+    build:
+      context: ../api
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      ASK_DATABASE_URL: postgresql+psycopg://ask:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/ask
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    security_opt: ["no-new-privileges:true"]
+
+  api:
+    build:
+      context: ../api
+    image: ask-api
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment: *api-environment
+    volumes:
+      - audio:/data/recordings
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # /api/ready answers 200 only when the database responds and audio storage is writable.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/ready', timeout=4).status == 200 else 1)"]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 20s
+
+  # Off unless asked for: `docker compose --profile processing up -d`. With ASK_AI_PROVIDER=none it would
+  # refuse to start and restart forever. Build it with real models: `INSTALL_AI=true docker compose
+  # --profile processing build worker` (large; see platform/docs/AI.md, and none of it has been verified).
+  worker:
+    profiles: ["processing"]
+    build:
+      context: ../api
+      args:
+        INSTALL_AI: ${INSTALL_AI:-false}
+    image: ask-worker
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment: *api-environment
+    volumes:
+      - audio:/data/recordings
+      - models:/models
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: ../web
+      args:
+        API_ORIGIN: http://api:8000
+        NEXT_PUBLIC_DEMO_MODE: "false"
+    image: ask-web
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?set PUBLIC_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  pgdata:
+  audio:
+  models:
+  caddy_data:
+  caddy_config:

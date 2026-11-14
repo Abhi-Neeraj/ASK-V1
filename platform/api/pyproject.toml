@@ -1,0 +1,112 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+# The application is run from this folder (`uvicorn app.main:create_app --factory`), not installed.
+# `pip install -e ".[dev]"` only installs the pinned dependencies below, so no packages are discovered.
+[tool.setuptools]
+py-modules = []
+
+[project]
+name = "ask-api"
+version = "0.1.0"
+description = "ASK voice locket platform: API, background worker and migrations"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "fastapi==0.162.0",
+  "uvicorn[standard]==0.54.0",
+  "pydantic[email]==2.14.2",
+  "pydantic-settings==2.16.2",
+  "sqlalchemy==2.1.6",
+  "alembic==1.20.1",
+  "argon2-cffi==25.1.0",
+  "numpy==2.4.6",  # pitch and voice signatures are arithmetic on audio samples (also pinned in the `ai` extra)
+]
+
+[project.optional-dependencies]
+# PostgreSQL driver. Required in production; SQLite is only for local development and tests.
+postgres = ["psycopg[binary]==3.3.6"]
+# Real speech models for the processing worker (ASK_AI_PROVIDER=local). These exact versions were installed
+# together on Windows (Python 3.11, CPU only) and `pip check` was clean; faster-whisper and speechbrain were
+# then run on real audio (see platform/docs/AI.md for what was and was not run: pyannote.audio is installed
+# and imports but has never run a diarization, because its model is gated and no token was available).
+# Large downloads: see platform/docs/AI.md. On Linux the default torch wheel bundles CUDA; for a CPU-only
+# server install torch and torchaudio from https://download.pytorch.org/whl/cpu first.
+ai = [
+  "faster-whisper==1.2.1",
+  "pyannote.audio==4.0.7",
+  "speechbrain==1.1.2",
+  "torch==2.14.1",
+  "torchaudio==2.11.0",
+  "numpy==2.4.6",
+  "scipy==1.17.1",
+]
+# The meaning-based engine of the meeting summary (ASK_ANALYSIS_ENGINE). Optional: the summary works without it.
+# Installed and run offline on Windows (Python 3.11, CPU) next to the `ai` extra; `pip check` was clean. The model's
+# weights are a separate download that never happens unless ASK_AI_TEXT_ALLOW_DOWNLOAD=true (see
+# platform/docs/VOICE_SIGNATURE.md).
+text = [
+  "sentence-transformers==6.3.0",
+]
+dev = [
+  "pytest==9.1.1",
+  "httpx2==2.16.0",
+  "psutil==7.2.2",  # tools/benchmark_pipeline.py measures the worker's processor and memory use
+  "ruff==0.17.2",
+  "mypy==2.4.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+filterwarnings = ["error::DeprecationWarning:app.*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+extend-exclude = [".venv", "migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF", "N", "C4", "PT"]
+ignore = [
+  "B008",  # FastAPI uses Depends() in argument defaults by design
+  "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S603: the firmware interop tests run a C++ compiler and the binaries they just built, with arguments they choose.
+"tests/**" = ["S101", "S105", "S106", "S311", "S603", "PT018"]
+# Development tools: plain asserts for "this should be so", and they start the API, the worker and other programs
+# of our own on purpose.
+"tools/**" = ["S101", "S603", "S607"]
+"migrations/**" = ["N999"]
+# The sentence rules are tables of regular expressions: each pattern reads best on one line.
+"app/insights/extract.py" = ["E501", "RUF001"]
+"app/insights/functions.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+exclude = ["^\\.venv/", "^migrations/versions/"]
+
+# The optional processing libraries (the `ai` extra) are imported lazily and are not installed in the
+# development or test environment, so there is nothing for mypy to read.
+[[tool.mypy.overrides]]
+module = [
+  "faster_whisper",
+  "faster_whisper.*",
+  "pyannote",
+  "pyannote.*",
+  "speechbrain",
+  "speechbrain.*",
+  "torch",
+  "torchaudio",
+  "torchaudio.*",
+  "scipy",
+  "scipy.*",
+  "sentence_transformers",
+  "sentence_transformers.*",
+]
+ignore_missing_imports = true

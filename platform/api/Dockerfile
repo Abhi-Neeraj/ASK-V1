@@ -1,0 +1,55 @@
+# ASK platform API and processing worker. One image, two commands (see platform/deploy/docker-compose.yml).
+#
+# NOT BUILT OR RUN where this was written: there was no Docker on that machine. Build it, run
+# `docker compose config`, and follow platform/docs/RUNBOOK.md before trusting it.
+#
+#   docker build -t ask-api platform/api                      # API and migrations, no AI libraries
+#   docker build --build-arg INSTALL_AI=true -t ask-worker platform/api   # worker with real models (large)
+
+FROM python:3.11-slim AS runtime
+
+ARG INSTALL_AI=false
+# CPU-only wheels for torch (the default Linux wheel bundles CUDA libraries and adds gigabytes). For a GPU
+# server, build with --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu128 (or your CUDA version).
+ARG TORCH_INDEX=https://download.pytorch.org/whl/cpu
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# The application runs from this folder rather than being installed, so only the dependencies
+# are installed here (the pinned ones in pyproject.toml, plus the PostgreSQL driver).
+COPY pyproject.toml ./
+RUN pip install ".[postgres]" \
+    && if [ "$INSTALL_AI" = "true" ]; then \
+         apt-get update \
+         && apt-get install -y --no-install-recommends libsndfile1 \
+         && rm -rf /var/lib/apt/lists/* \
+         && pip install --index-url "$TORCH_INDEX" "torch==2.14.1" "torchaudio==2.11.0" \
+         && pip install ".[ai]"; \
+       fi
+
+COPY alembic.ini ./
+COPY migrations ./migrations
+COPY app ./app
+
+# Never run as root. Recordings and model weights live on volumes mounted under /data and /models.
+RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ask \
+    && mkdir -p /data/recordings /models \
+    && chown -R ask:ask /data /models /app
+USER ask
+
+ENV ASK_ENV=production \
+    ASK_STORAGE_DIR=/data/recordings \
+    ASK_AI_MODEL_DIR=/models \
+    HF_HOME=/models/huggingface
+
+EXPOSE 8000
+
+# `--factory` is required: nothing is built at import time. The short graceful timeout keeps open
+# live-update streams from holding up a restart. `--no-access-log` because an invitation link carries its secret
+# in the URL path, and the access log would keep every one of them (the application logs what it needs itself).
+CMD ["python", "-m", "uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "3", "--no-access-log"]
