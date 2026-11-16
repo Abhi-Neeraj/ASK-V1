@@ -1,0 +1,21 @@
+# Render's free plan puts the ASK server to sleep after 15 minutes without requests; waking takes about a minute,
+# longer than Vercel waits for /api (the website then shows "The server answered 502"). A request every 10 minutes
+# keeps it awake, and keeps the processing worker (same container) running. One free service awake all month uses
+# about 720 of the 750 free instance hours. GitHub may delay scheduled runs by a few minutes.
+
+name: Keep Render awake
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ping the ASK server
+        run: curl --silent --show-error --fail --max-time 120 --retry 2 https://ask-api-k3xe.onrender.com/api/health
