@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Request, Response
@@ -28,6 +29,7 @@ from app.services.audit import record_audit, record_device_event
 from app.services.uploads import finalize_upload, parse_upload_headers, spool_to_disk
 
 router = APIRouter(prefix="/api/lockets", tags=["lockets"])
+logger = logging.getLogger("ask.lockets")
 
 
 @router.get("", response_model=list[LocketOut])
@@ -142,6 +144,36 @@ async def upload_from_phone(
 ) -> UploadAck:
     """The phone uploads a WAV the locket sent it over Bluetooth. Same headers and answers as the locket's own
     upload (`201` stored, `200` already stored); the caller must be on the locket."""
+    try:
+        return await _upload_from_phone(
+            product_id, client_recording_id, request, response, ctx, db, settings, limiter, storage
+        )
+    except ApiError as error:
+        # The phone sets a refused part aside; without this line the hosted log never says why. Only the
+        # reason, the locket, the clip name and the start time it claimed: never audio, paths or secrets.
+        logger.warning(
+            "phone upload refused: status=%s code=%s locket=%s clip=%s recorded_at=%r reason=%s",
+            error.status,
+            error.code,
+            product_id,
+            client_recording_id,
+            request.headers.get("x-recorded-at"),
+            error.message,
+        )
+        raise
+
+
+async def _upload_from_phone(
+    product_id: str,
+    client_recording_id: str,
+    request: Request,
+    response: Response,
+    ctx: Authed,
+    db: DbDep,
+    settings: SettingsDep,
+    limiter: LimiterDep,
+    storage: StorageDep,
+) -> UploadAck:
     device = svc.find_locket(db, ctx, product_id)
     if not svc.is_member(db, device, ctx.user.id):
         raise not_found("locket")

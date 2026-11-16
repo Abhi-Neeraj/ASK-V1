@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from app.config import Settings
+from app.config import DatabaseSettings, Settings
 
 GOOD_SECRET = "a-long-random-secret-for-tests-0123456789"
 
@@ -115,3 +115,18 @@ class TestProductionRules:
 def test_smtp_needs_a_host() -> None:
     with pytest.raises(ValidationError, match="SMTP_HOST"):
         make(email_backend="smtp")
+
+
+@pytest.mark.parametrize(
+    ("given", "expected"),
+    [
+        ("postgresql://u:p@db.example:5432/ask", "postgresql+psycopg://u:p@db.example:5432/ask"),
+        ("postgres://u:p@db.example/ask", "postgresql+psycopg://u:p@db.example/ask"),
+        ("postgresql+psycopg://u:p@db.example/ask", "postgresql+psycopg://u:p@db.example/ask"),
+        ("sqlite://", "sqlite://"),
+    ],
+)
+def test_a_hosted_postgres_url_gets_the_installed_driver(given: str, expected: str) -> None:
+    """Hosts such as Render hand out `postgresql://` (or `postgres://`); only psycopg 3 is installed."""
+    assert make(database_url=given).database_url == expected
+    assert DatabaseSettings(_env_file=None, database_url=given).database_url == expected  # type: ignore[call-arg]

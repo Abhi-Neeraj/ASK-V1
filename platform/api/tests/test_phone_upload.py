@@ -79,6 +79,23 @@ def test_not_a_wav_is_refused(setup) -> None:  # type: ignore[no-untyped-def]
     assert upload(setup["employee"], setup["product_id"], "phone-clip-0005", b"x" * 100).status_code == 422
 
 
+def test_a_refused_upload_is_logged_with_its_reason(setup, caplog) -> None:  # type: ignore[no-untyped-def]
+    """A refusal is written to the server log (code, locket, clip), so a hosted failure can be read there."""
+    with caplog.at_level("WARNING", logger="ask.lockets"):
+        refused = upload(setup["employee"], setup["product_id"], "phone-clip-0006", b"x" * 100)
+    assert refused.status_code == 422
+    lines = [r.getMessage() for r in caplog.records if r.name == "ask.lockets"]
+    wanted = ("invalid_audio", setup["product_id"], "phone-clip-0006")
+    assert any(all(part in line for part in wanted) for line in lines), lines
+
+
+def test_a_refused_upload_log_never_holds_the_audio_or_its_path(setup, caplog) -> None:  # type: ignore[no-untyped-def]
+    with caplog.at_level("WARNING", logger="ask.lockets"):
+        upload(setup["employee"], setup["product_id"], "phone-clip-0007", b"x" * 100)
+    text = " ".join(r.getMessage() for r in caplog.records if r.name == "ask.lockets")
+    assert "xxxx" not in text and "/" not in text.replace(setup["product_id"], "")
+
+
 def test_every_member_at_arrival_can_see_it(setup) -> None:  # type: ignore[no-untyped-def]
     setup["admin"].patch(f"/api/lockets/{setup['product_id']}/limit", json={"maxUsers": 2})
     assert pair(setup["manager"], setup["product_id"], OTHER_NONCE) == 204

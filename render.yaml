@@ -1,0 +1,57 @@
+# Render Blueprint for the ASK server (platform/api): the API and the processing worker in one free web service,
+# plus a free PostgreSQL database. Replaces the Railway service while that workspace is restricted.
+#
+# Free-tier limits (Render): the service sleeps after 15 minutes without requests and takes about a minute to
+# wake; the free database expires 30 days after it is created; there is no permanent disk, so uploaded audio
+# lives only until the container restarts (the worker transcribes it within minutes of arrival).
+#
+# ASK_ENV stays "development" exactly as on Railway (log-only email); see docs/HANDOFF_2026-11-16.md section 9
+# before switching to production. The two Google keys are entered by the owner in the Render dashboard
+# (sync: false); nothing secret is written in this file.
+
+services:
+  - type: web
+    name: ask-api
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerContext: ./platform/api
+    dockerfilePath: ./platform/api/Dockerfile.railway
+    healthCheckPath: /api/health
+    autoDeploy: true
+    buildFilter:
+      paths:
+        - platform/api/**
+    envVars:
+      - key: ASK_ENV
+        value: development
+      - key: ASK_EMAIL_BACKEND
+        value: console
+      - key: ASK_COOKIE_SECURE
+        value: "true"
+      - key: ASK_WEB_ORIGINS
+        value: https://ask-app-six.vercel.app
+      - key: ASK_WEB_BASE_URL
+        value: https://ask-app-six.vercel.app
+      - key: ASK_AI_PROVIDER
+        value: google
+      - key: ASK_SECRET_KEY
+        generateValue: true
+      # Locket secrets are derived from this key: never change it once lockets are provisioned on this server.
+      - key: ASK_LOCKET_MASTER_KEY
+        generateValue: true
+      - key: ASK_DATABASE_URL
+        fromDatabase:
+          name: ask-db
+          property: connectionString
+      - key: ASK_GOOGLE_STT_API_KEY
+        sync: false
+      - key: ASK_GEMINI_API_KEY
+        sync: false
+
+databases:
+  - name: ask-db
+    plan: free
+    region: singapore
+    databaseName: ask
+    user: ask

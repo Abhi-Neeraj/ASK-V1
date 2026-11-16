@@ -232,6 +232,11 @@ class Settings(BaseSettings):
     smtp_password: SecretStr | None = None
     contact_recipient: str | None = None
 
+    @field_validator("database_url")
+    @classmethod
+    def _database_driver(cls, value: str) -> str:
+        return _with_psycopg_driver(value)
+
     @field_validator("web_origins", mode="before")
     @classmethod
     def _origins_from_csv(cls, value: object) -> object:
@@ -331,6 +336,20 @@ class DatabaseSettings(BaseSettings):
     )
 
     database_url: str = f"sqlite:///{(DATA_DIR / 'ask.sqlite3').as_posix()}"
+
+    @field_validator("database_url")
+    @classmethod
+    def _database_driver(cls, value: str) -> str:
+        return _with_psycopg_driver(value)
+
+
+def _with_psycopg_driver(url: str) -> str:
+    """Hosted databases (Render, Heroku-style) hand out `postgresql://` or `postgres://`, which SQLAlchemy
+    reads as psycopg2. Only psycopg 3 is installed (`.[postgres]`), so name it. A named driver is kept."""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
 
 
 @lru_cache
