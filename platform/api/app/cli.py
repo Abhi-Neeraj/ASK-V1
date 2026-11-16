@@ -6,6 +6,7 @@ Commands:
     generate-env       Write a local .env file with a fresh random secret.
     check              Validate configuration, database, and storage.
     bootstrap          Create a company and its first administrator.
+    bootstrap-from-env The same from ASK_BOOTSTRAP_*, only while no company exists (start-up).
     reset-password     Set a new password for a locked-out account.
     housekeeping       Run one pass of periodic upkeep.
     ai-check           Show available processing-provider capabilities.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import secrets
 import sys
 from pathlib import Path
@@ -126,6 +128,55 @@ def bootstrap(settings: Settings, company: str, name: str, email: str, password_
         engine.dispose()
 
     print(f"Created company '{created.name}' with administrator {user.email}. You can sign in now.")
+    return 0
+
+
+BOOTSTRAP_VARIABLES = (
+    "ASK_BOOTSTRAP_COMPANY",
+    "ASK_BOOTSTRAP_NAME",
+    "ASK_BOOTSTRAP_EMAIL",
+    "ASK_BOOTSTRAP_PASSWORD",
+)
+
+
+def bootstrap_from_env(settings: Settings) -> int:
+    """`bootstrap` for a host with no console (Render's free plan), run at every start-up.
+
+    Creates the company and its first administrator from ASK_BOOTSTRAP_* only while the database has no
+    company at all, so it can never add a second company or touch an existing account. Without all four
+    settings it does nothing. The password is never printed.
+    """
+    from sqlalchemy import func, select
+
+    from app.db import make_engine, make_session_factory
+    from app.errors import ApiError
+    from app.models import Company
+    from app.services import accounts
+
+    values = {key: os.environ.get(key, "").strip() for key in BOOTSTRAP_VARIABLES}
+    if not all(values.values()):
+        return 0
+
+    engine = make_engine(settings.database_url)
+    try:
+        with make_session_factory(engine)() as db:
+            if db.scalar(select(func.count()).select_from(Company)):
+                return 0
+            try:
+                created, user = accounts.create_company_with_admin(
+                    db,
+                    company_name=values["ASK_BOOTSTRAP_COMPANY"],
+                    email=values["ASK_BOOTSTRAP_EMAIL"],
+                    name=values["ASK_BOOTSTRAP_NAME"],
+                    password=values["ASK_BOOTSTRAP_PASSWORD"],
+                )
+            except ApiError as error:
+                print(f"Could not create the first account: {error.message}", file=sys.stderr)
+                return 1
+    finally:
+        engine.dispose()
+
+    print(f"Created company '{created.name}' with administrator {user.email} from ASK_BOOTSTRAP_*.")
     return 0
 
 
@@ -344,6 +395,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="read the password from standard input",
     )
+    commands.add_parser(
+        "bootstrap-from-env",
+        help="create the first company from ASK_BOOTSTRAP_* if none exists (run at start-up)",
+    )
 
     locket_parser = commands.add_parser(
         "register-locket",
@@ -460,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(settings)
     if args.command == "bootstrap":
         return bootstrap(settings, args.company, args.name, args.email, args.password_stdin)
+    if args.command == "bootstrap-from-env":
+        return bootstrap_from_env(settings)
     if args.command == "register-locket":
         return register_locket(settings, args.company_id, args.name)
     if args.command == "reset-password":

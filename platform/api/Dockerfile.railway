@@ -55,4 +55,6 @@ EXPOSE 8000
 # in the URL path, and the access log would keep every one of them (the application logs what it needs itself).
 # Railway: the processing worker runs beside the API in this one container, because uploaded audio lives on this
 # container's disk (the /data volume) and a separate service could not read it. It restarts itself if it stops.
-CMD ["sh", "-c", "python -m alembic -c alembic.ini upgrade head 2>&1 | tail -1; (while true; do python -m app.worker; sleep 5; done) & exec python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8000} --timeout-graceful-shutdown 3 --no-access-log"]
+# Render: `bootstrap-from-env` creates the first company from ASK_BOOTSTRAP_* while none exists (no console there);
+# without those settings (Railway) it does nothing.
+CMD ["sh", "-c", "python -m alembic -c alembic.ini upgrade head 2>&1 | tail -1; python -m app.cli bootstrap-from-env; (while true; do python -m app.worker; sleep 5; done) & exec python -m uvicorn app.main:create_app --factory --host 0.0.0.0 --port ${PORT:-8000} --timeout-graceful-shutdown 3 --no-access-log"]

@@ -249,3 +249,64 @@ def test_register_locket_needs_a_known_company(local_env: Path, monkeypatch: pyt
     migrate(local_env)
     unknown = "00000000-0000-0000-0000-000000000000"
     assert cli.main(["register-locket", "--company-id", unknown, "--name", "x"]) == 1
+
+
+BOOTSTRAP_ENV = {
+    "ASK_BOOTSTRAP_COMPANY": "Acme Works",
+    "ASK_BOOTSTRAP_NAME": "Ada Admin",
+    "ASK_BOOTSTRAP_EMAIL": "ada@acme.example.com",
+    "ASK_BOOTSTRAP_PASSWORD": STRONG_PASSWORD,
+}
+
+
+def _set_bootstrap_env(monkeypatch: pytest.MonkeyPatch, **overrides: str) -> None:
+    for key, value in {**BOOTSTRAP_ENV, **overrides}.items():
+        monkeypatch.setenv(key, value)
+
+
+def _users(database: Path) -> list[User]:
+    engine = make_engine(f"sqlite:///{database.as_posix()}")
+    try:
+        with make_session_factory(engine)() as db:
+            return list(db.scalars(select(User)))
+    finally:
+        engine.dispose()
+
+
+def test_bootstrap_from_env_creates_the_first_company_once(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A host with no console (Render free) creates its first administrator at start-up from its settings."""
+    migrate(local_env)
+    _set_bootstrap_env(monkeypatch)
+    assert cli.main(["bootstrap-from-env"]) == 0
+    assert [u.email for u in _users(local_env)] == ["ada@acme.example.com"]
+    assert cli.main(["bootstrap-from-env"]) == 0  # every later start: nothing to do
+    assert len(_users(local_env)) == 1
+    assert STRONG_PASSWORD not in capsys.readouterr().out + capsys.readouterr().err
+
+
+def test_bootstrap_from_env_never_adds_a_company_beside_an_existing_one(
+    local_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    migrate(local_env)
+    _set_bootstrap_env(monkeypatch)
+    assert cli.main(["bootstrap-from-env"]) == 0
+    _set_bootstrap_env(monkeypatch, ASK_BOOTSTRAP_EMAIL="other@elsewhere.example.com")
+    assert cli.main(["bootstrap-from-env"]) == 0
+    assert [u.email for u in _users(local_env)] == ["ada@acme.example.com"]
+
+
+def test_bootstrap_from_env_does_nothing_without_its_settings(local_env: Path) -> None:
+    migrate(local_env)
+    for key in BOOTSTRAP_ENV:
+        assert key not in __import__("os").environ
+    assert cli.main(["bootstrap-from-env"]) == 0
+    assert _users(local_env) == []
+
+
+def test_bootstrap_from_env_refuses_a_weak_password(local_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    migrate(local_env)
+    _set_bootstrap_env(monkeypatch, ASK_BOOTSTRAP_PASSWORD="short")
+    assert cli.main(["bootstrap-from-env"]) == 1
+    assert _users(local_env) == []
