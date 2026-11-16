@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/api/:path*", "destination": "https://api-production-f50c1b16.up.railway.app/api/:path*" },
+    { "source": "/((?!_expo/|assets/|api/).*)", "destination": "/index.html" }
+  ]
+}

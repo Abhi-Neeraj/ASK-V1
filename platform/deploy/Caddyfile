@@ -1,0 +1,36 @@
+# Reverse proxy and TLS. Caddy gets and renews a certificate for {$PUBLIC_DOMAIN} by itself, which needs
+# the name to point at this machine and ports 80 and 443 to be reachable from the internet.
+#
+# NOT RUN where this was written. Read it against https://caddyserver.com/docs/ before relying on it.
+
+{$PUBLIC_DOMAIN} {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	# Live updates are a long-lived text/event-stream. It must not be compressed or buffered, or the
+	# browser sees nothing until the stream ends. This has to come before the general /api rule.
+	handle /api/events {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# Everything else under /api goes straight to the API: browsers (with cookies), the dashboard's
+	# playback and downloads, and the lockets (bearer credential). Uploads are capped a little above
+	# ASK_MAX_UPLOAD_BYTES (25 MiB by default); the API enforces its own limit as well.
+	handle /api/* {
+		request_body {
+			max_size 30MB
+		}
+		encode zstd gzip
+		reverse_proxy api:8000
+	}
+
+	handle {
+		encode zstd gzip
+		reverse_proxy web:3000
+	}
+}
