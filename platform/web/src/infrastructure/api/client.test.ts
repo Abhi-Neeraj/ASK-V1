@@ -18,6 +18,45 @@ const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
 describe("createClient", () => {
+
+  it("waits_and_retries_while_a_sleeping_server_wakes_up", async () => {
+    // A free host sleeps when idle; the proxy answers 502/503/504 until it is up again.
+    const statuses = [502, 504, 503];
+    const { calls, fetchImpl } = fakeFetch(() => {
+      const next = statuses.shift();
+      return next ? new Response("Bad gateway", { status: next }) : json(200, { ok: true });
+    });
+    const waits: number[] = [];
+    const client = createClient({
+      base: "http://api",
+      fetchImpl,
+      tokens: memoryTokenStore(),
+      wait: async (ms) => void waits.push(ms),
+    });
+
+    await expect(client.request("POST", "/api/auth/login", { json: { email: "a" } })).resolves.toEqual({ ok: true });
+    expect(calls).toHaveLength(4);
+    expect(waits).toHaveLength(3);
+    expect(calls[3].init.body).toBe(JSON.stringify({ email: "a" }));
+  });
+
+  it("gives_up_with_a_clear_message_when_the_server_stays_down", async () => {
+    const { calls, fetchImpl } = fakeFetch(() => new Response("Bad gateway", { status: 502 }));
+    const client = createClient({ base: "http://api", fetchImpl, tokens: memoryTokenStore(), wait: async () => {} });
+
+    const error = await client.request("GET", "/api/lockets").catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).status).toBe(502);
+    expect((error as ApiError).message).toMatch(/starting up/i);
+    expect(calls.length).toBeGreaterThan(1);
+  });
+
+  it("does_not_retry_an_ordinary_server_error", async () => {
+    const { calls, fetchImpl } = fakeFetch(() => json(500, { error: { code: "internal", message: "Boom" } }));
+    const client = createClient({ base: "http://api", fetchImpl, tokens: memoryTokenStore(), wait: async () => {} });
+    await expect(client.request("GET", "/api/lockets")).rejects.toThrow("Boom");
+    expect(calls).toHaveLength(1);
+  });
   it("sends_credentials_and_csrf_on_writes_only", async () => {
     const { calls, fetchImpl } = fakeFetch(() => json(200, { ok: true }));
     const tokens = memoryTokenStore();
