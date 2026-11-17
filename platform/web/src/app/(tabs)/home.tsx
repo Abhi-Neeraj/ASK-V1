@@ -74,6 +74,9 @@ export default function Today() {
   };
 
   const recording = locket.status?.state === "recording";
+  // A recording is accepted only from someone paired with that locket: say so when the one connected is not theirs.
+  const isMine = (item: LocketOut) => item.members.some((m) => m.id === user?.id);
+  const mine = lockets?.filter(isMine) ?? [];
 
   return (
     <Page title={`Hello, ${user?.name.split(" ")[0] ?? ""}`} subtitle="Your locket and your latest meetings." onRefresh={refresh} refreshing={refreshing}>
@@ -103,11 +106,13 @@ export default function Today() {
           <Text style={uiText.mono}>{item.productId}</Text>
           <Text style={uiText.muted}>
             {locket.connected && locket.productId === item.productId
-              ? `Connected${locket.status ? ` · battery ${locket.status.batteryPercent}%` : ""}`
+              ? `Connected${locket.status ? ` · battery ${locket.status.batteryPercent}%` : ""}${isMine(item) ? "" : " · not paired with you yet"}`
               : locket.reconnecting && locket.productId === item.productId
                 ? "Connection lost, reconnecting…"
                 : locket.available
-                  ? "Not connected"
+                  ? isMine(item)
+                    ? "Not connected"
+                    : "Not paired with you yet"
                   : `${item.members.length} of ${item.maxUsers} ${item.maxUsers === 1 ? "person" : "people"}`}
           </Text>
         </Card>
@@ -124,12 +129,24 @@ export default function Today() {
         </View>
       ) : null}
       {locket.available && !locket.connected && !locket.reconnecting && lockets?.length ? (
-        <Button
-          label={`Connect to ${lockets[0].productId}`}
-          kind="secondary"
-          loading={locket.busy}
-          onPress={() => locket.connectTo(lockets[0].productId)}
-        />
+        mine.length ? (
+          <Button
+            label={`Connect to ${mine[0].productId}`}
+            kind="secondary"
+            loading={locket.busy}
+            onPress={() => locket.connectTo(mine[0].productId)}
+          />
+        ) : (
+          <Button label="Pair a locket" kind="secondary" onPress={() => router.push("/lockets")} />
+        )
+      ) : null}
+      {locket.available && locket.connected && locket.productId && !mine.some((l) => l.productId === locket.productId) ? (
+        <View>
+          <Notice>
+            {`This account is not paired with ${locket.productId}, so its recordings cannot upload yet. Open Lockets, find it nearby and pair it.`}
+          </Notice>
+          <Button label="Pair it now" kind="secondary" onPress={() => router.push("/lockets")} />
+        </View>
       ) : null}
       {locket.available && locket.message && !locket.connected ? <Notice>{locket.message}</Notice> : null}
       {locket.available && locket.pending > 0 ? (
