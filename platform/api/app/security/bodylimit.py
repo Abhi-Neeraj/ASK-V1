@@ -24,6 +24,11 @@ def is_streamed_upload(method: str, path: str) -> bool:
     """Routes that stream their body to disk and enforce their own limit."""
     if method == "PUT" and path.startswith("/api/device/v1/recordings/"):
         return True
+    # The phone uploads a locket's audio here, about a minute (1.9 MB) at a time. The route spools the body to
+    # disk and enforces `max_upload_bytes` itself (after checking who is asking); under the 1 MB limit for
+    # ordinary bodies, anything over about 30 seconds of audio was refused as "body_too_large".
+    if method == "PUT" and path.startswith("/api/lockets/") and "/recordings/" in path:
+        return True
     return method == "POST" and path.startswith("/api/people/") and path.endswith("/enroll")
 
 

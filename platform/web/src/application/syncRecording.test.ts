@@ -162,13 +162,17 @@ describe("savePart and retryPending", () => {
     const meta = { productId: "ASK-NOPAIR", sessionId: "SESSION000000001", part: 0, startedAt: part(0).startedAt.toISOString() };
     files.store.set("ASK/rejected/SESSION000000001-0.wav", part(0).wav);
     files.store.set("ASK/rejected/SESSION000000001-0.json", JSON.stringify({ ...meta, reason: "not_found" }));
+    // A part the server refused as too large (a server mistake since fixed) is put back too.
+    files.store.set("ASK/rejected/SESSION000000003-0.wav", new Uint8Array([3]));
+    files.store.set("ASK/rejected/SESSION000000003-0.json", JSON.stringify({ ...meta, sessionId: "SESSION000000003", reason: "body_too_large" }));
     // Another set-aside part, refused for a real reason, must stay where it is.
     files.store.set("ASK/rejected/SESSION000000009-0.wav", new Uint8Array([1]));
     files.store.set("ASK/rejected/SESSION000000009-0.json", JSON.stringify({ ...meta, sessionId: "SESSION000000009", reason: "audio_too_long" }));
     const server = api(() => "ok");
     const result = await retryPending({ api: server, files });
-    expect(result.uploaded).toEqual(["rec-SESSION000000001-0"]);
+    expect(result.uploaded).toEqual(["rec-SESSION000000001-0", "rec-SESSION000000003-0"]);
     expect(files.store.has("ASK/rejected/SESSION000000001-0.wav")).toBe(false);
+    expect(files.store.has("ASK/rejected/SESSION000000003-0.wav")).toBe(false);
     expect(files.store.has("ASK/rejected/SESSION000000009-0.wav")).toBe(true);
   });
 

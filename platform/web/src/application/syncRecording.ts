@@ -83,8 +83,10 @@ function notOnLocket(error: unknown): boolean {
 }
 
 /**
- * Parts an older version set aside because of a 404 (the account was not paired with the locket yet) go back to the
- * waiting list, so a recording made before pairing is not lost. Parts refused for any other reason stay set aside.
+ * Parts set aside for a reason that was not about the audio go back to the waiting list, so nothing is lost: a 404
+ * (the account was not paired with the locket yet) and "body_too_large" (the server used to refuse any upload over
+ * 1 MB, about 30 seconds of audio, which was a server mistake, since fixed). Parts refused for any other reason stay
+ * set aside.
  */
 async function requeueUnpaired(files: LocalFiles): Promise<void> {
   for (const name of (await files.list(REJECTED)).filter((n) => n.endsWith(".json"))) {
@@ -93,7 +95,7 @@ async function requeueUnpaired(files: LocalFiles): Promise<void> {
     const wav = await files.read(`${REJECTED}/${key}.wav`);
     if (!metaBytes || !wav) continue;
     const { reason, ...meta } = JSON.parse(new TextDecoder().decode(metaBytes)) as PendingMeta & { reason?: string };
-    if (reason !== "not_found") continue;
+    if (reason !== "not_found" && reason !== "body_too_large") continue;
     await files.write(`${PENDING}/${key}.wav`, wav);
     await files.write(`${PENDING}/${key}.json`, JSON.stringify(meta));
     await files.remove(`${REJECTED}/${key}.wav`);

@@ -146,3 +146,22 @@ def test_the_uploader_is_the_wearer_and_every_member_hears_about_it(setup, db: S
     assert any(
         e.type == "recording.uploaded" and e.payload["recordingId"] == str(recording.id) for e in events
     )
+
+
+def test_a_full_minute_of_audio_is_accepted(setup) -> None:  # type: ignore[no-untyped-def]
+    """The phone sends about a minute at a time (1.9 MB): more than an ordinary request may carry (1 MB). This
+    was refused as `body_too_large` until audio uploads were exempted from that limit, so any recording over
+    about 30 seconds failed."""
+    body = make_wav(60.0)
+    assert len(body) > 1024 * 1024
+    stored = upload(setup["employee"], setup["product_id"], "phone-clip-0100", body)
+    assert stored.status_code == 201, stored.text
+    longer = make_wav(120.0)
+    assert upload(setup["employee"], setup["product_id"], "phone-clip-0101", longer).status_code == 201
+
+
+def test_the_upload_limit_still_applies_to_audio(setup) -> None:  # type: ignore[no-untyped-def]
+    """Exempt from the 1 MB limit for ordinary requests, audio still stops at the server's own limit."""
+    too_big = make_wav(820.0)  # 26 MB: over the 25 MB an upload may carry
+    refused = upload(setup["employee"], setup["product_id"], "phone-clip-0102", too_big)
+    assert refused.status_code == 413, refused.text
