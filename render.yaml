@@ -66,6 +66,14 @@ services:
         value: "30"
       - key: ASK_WORKER_POLL_SECONDS
         value: "0.5"
+      # Neon bills database compute by the hour and pauses an idle database after 5 minutes: let it sleep when
+      # nobody is using ASK (these match the defaults baked into the Dockerfile; see app/services/wake.py).
+      - key: ASK_WORKER_WAKE_FILE
+        value: /tmp/ask-worker-wake
+      - key: ASK_WORKER_SLEEPY_AFTER_SECONDS
+        value: "600"
+      - key: ASK_BACKGROUND_INTERVAL_SECONDS
+        value: "3600"
       - key: ASK_GOOGLE_STT_API_KEY
         sync: false
       - key: ASK_GEMINI_API_KEY

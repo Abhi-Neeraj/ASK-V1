@@ -18,13 +18,14 @@ import os
 import signal
 import socket
 import threading
+import time
 import uuid
 
 from app.ai.registry import build_provider, warm_up
 from app.ai.types import Provider, ProviderUnavailableError
 from app.config import Settings, get_settings
 from app.db import SessionFactory, make_engine, make_session_factory
-from app.services import jobs, workers
+from app.services import jobs, wake, workers
 from app.services.jobs import sanitize_error
 from app.services.pipeline import Pipeline
 from app.services.storage import Storage
@@ -51,6 +52,10 @@ class Worker:
         self.provider = provider
         self.worker_id = worker_id or new_worker_id()
         self.stopping = threading.Event()
+        # Asleep: nothing to do for a while, so the database is left alone until the API signals a new job
+        # (see app/services/wake.py), or the safety look comes round. Only when a wake file is set.
+        self.sleepy = False
+        self._wake_seen = wake.stamp(settings.worker_wake_file)
         self.pipeline = Pipeline(
             factory, settings, provider, storage, self.worker_id, should_stop=self.stopping.is_set
         )
@@ -65,6 +70,8 @@ class Worker:
         """Keeps reporting in during a long job, when the main loop is busy inside a model."""
         interval = max(self.settings.worker_online_seconds / 3, 0.05)
         while not self.stopping.wait(interval):
+            if self.sleepy:
+                continue  # asleep on purpose: reporting in would keep the database awake
             try:
                 self.heartbeat()
             except Exception:
@@ -94,13 +101,38 @@ class Worker:
         beater = threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True)
         beater.start()
         logger.info("worker %s started with provider %s", self.worker_id, self.provider.name)
+        wake_file = self.settings.worker_wake_file
+        sleep_after = self.settings.worker_sleepy_after_seconds if wake_file is not None else 0.0
+        idle_since = last_look = time.monotonic()
         try:
             while not self.stopping.is_set():
+                if self.sleepy:
+                    signalled = wake.stamp(wake_file)
+                    safety = time.monotonic() - last_look >= self.settings.worker_sleepy_poll_seconds
+                    if signalled == self._wake_seen and not safety:
+                        self.stopping.wait(0.5)  # a look at one file, no database
+                        continue
+                    self._wake_seen = signalled
+                    self.sleepy = False
+                    logger.info("looking at the queue again")
+                    try:
+                        self.heartbeat()
+                    except Exception:
+                        logger.exception("could not report in")
                 if self.work_once():
                     processed += 1
+                    idle_since = time.monotonic()
                     continue
                 if once:
                     break
+                last_look = time.monotonic()
+                if sleep_after > 0 and last_look - idle_since >= sleep_after:
+                    self.sleepy = True
+                    logger.info(
+                        "nothing to do for %.0f s: leaving the database alone until a recording arrives",
+                        sleep_after,
+                    )
+                    continue
                 self.stopping.wait(self.settings.worker_poll_seconds)
         finally:
             self.stopping.set()

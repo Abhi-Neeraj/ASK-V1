@@ -38,6 +38,7 @@ from app.routers import (
 from app.security.bodylimit import BodyLimitMiddleware
 from app.security.headers import SecurityHeadersMiddleware
 from app.security.ratelimit import RateLimiter
+from app.services import wake
 from app.services.email import EmailSender, build_sender
 from app.services.events import StreamRegistry
 from app.services.housekeeping import run_housekeeping
@@ -54,6 +55,7 @@ def create_app(
 ) -> FastAPI:
     settings = settings or get_settings()
     engine = engine or make_engine(settings.database_url)
+    wake.configure(settings.worker_wake_file)
 
     async def housekeeping_loop(application: FastAPI) -> None:
         while True:

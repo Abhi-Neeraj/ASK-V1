@@ -21,4 +21,4 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Ping the ASK server
-        run: curl --silent --show-error --fail --max-time 120 --retry 2 https://ask-api-k3xe.onrender.com/api/health
+        run: curl --silent --show-error --fail --max-time 120 --retry 2 https://ask-api-uaq9.onrender.com/api/health

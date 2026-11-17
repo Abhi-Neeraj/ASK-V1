@@ -217,6 +217,15 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=2.0, gt=0)
     # The dashboard says "no worker running" when none has reported in for this long.
     worker_online_seconds: float = Field(default=30.0, gt=0)
+    # Free database hosting (Neon) bills compute by the hour and pauses an idle database after 5 minutes.
+    # Left alone, the worker asks the database for work twice a second and never lets it sleep, which would
+    # use a month of free hours in about two weeks. With a wake file set, a worker with nothing to do for
+    # `worker_sleepy_after_seconds` stops using the database: it watches a small file the API touches right
+    # after it queues a job, and looks anyway every `worker_sleepy_poll_seconds` as a safety net.
+    # 0 keeps the old behaviour (poll all the time).
+    worker_sleepy_after_seconds: float = Field(default=0.0, ge=0)
+    worker_sleepy_poll_seconds: float = Field(default=1800.0, gt=0)
+    worker_wake_file: Path | None = None
 
     # --- simulated lockets ---------------------------------------------------------------------
     # tools/simulate_device.py pairs as a "simulated" locket. None means: allowed everywhere except
