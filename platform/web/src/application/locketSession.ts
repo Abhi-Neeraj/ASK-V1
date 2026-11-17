@@ -9,7 +9,7 @@
 //   again after each connect and save.
 
 import { type CapturedPart, RecordingCapture } from "@/application/captureRecording";
-import { pendingCount, retryPending, savePart } from "@/application/syncRecording";
+import { discardPending, pendingCount, retryPending, savePart } from "@/application/syncRecording";
 import { type LocketStatus, parseInfo, parseStatus, time } from "@/domain/locket/commands";
 import type { FoundLocket, LocketLink } from "@/domain/locket/link";
 import type { UploadAck } from "@/infrastructure/api/types";
@@ -23,6 +23,8 @@ export type SessionState = {
   firmwareVersion: string | null;
   message: string | null;
   pending: number;
+  /** Recordings are waiting because this account is not paired with their locket (so they cannot upload yet). */
+  notPaired: boolean;
   lastRecordingId: string | null;
 };
 
@@ -47,6 +49,7 @@ export class LocketSession {
     firmwareVersion: null,
     message: null,
     pending: 0,
+    notPaired: false,
     lastRecordingId: null,
   };
   private deviceId: string | null = null;
@@ -111,15 +114,24 @@ export class LocketSession {
     this.set({ connected: false, reconnecting: false, status: null });
   }
 
+  /** Throw away the recordings waiting on this phone (and any set aside), so a clip that can never upload stops
+   *  being offered. */
+  async discardWaiting(): Promise<void> {
+    await discardPending(this.deps.files);
+    this.set({ pending: await pendingCount(this.deps.files), notPaired: false, message: null });
+  }
+
   /** Upload everything waiting on this phone. Safe to call often: one run at a time. */
   uploadWaiting(): Promise<void> {
     this.uploading ??= (async () => {
       try {
-        const { uploaded, rejected, reasons } = await retryPending({ api: this.deps.api, files: this.deps.files });
+        const { uploaded, rejected, reasons, waiting } = await retryPending({ api: this.deps.api, files: this.deps.files });
         const pending = await pendingCount(this.deps.files);
-        const patch: Partial<SessionState> = { pending };
+        const patch: Partial<SessionState> = { pending, notPaired: waiting.length > 0 };
         if (uploaded.length) patch.lastRecordingId = uploaded[uploaded.length - 1];
-        if (rejected.length) {
+        if (waiting.length) {
+          patch.message = `Your account is not paired with ${waiting.join(", ")} yet, so its recordings are waiting on this phone. Open Lockets and pair it: they upload as soon as you are paired.`;
+        } else if (rejected.length) {
           const why = [...new Set(reasons)].join("; ");
           patch.message = `${rejected.length} recording(s) were refused by the server and set aside${why ? ` (${why})` : ""}.`;
         }

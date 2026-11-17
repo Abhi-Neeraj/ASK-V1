@@ -21,6 +21,7 @@ from app.schemas.recordings import (
 )
 from app.security.deps import Authed, DbDep, Manager, SettingsDep
 from app.services import insights as insights_service
+from app.services import meeting as meetings
 from app.services import recordings as svc
 from app.services import textfiles
 from app.services.audit import record_audit
@@ -185,16 +186,35 @@ def correct_transcript(
 
 
 @router.delete("/api/recordings/{recording_id}", status_code=204)
-def delete_recording(recording_id: uuid.UUID, ctx: Manager, db: DbDep) -> Response:
+def delete_recording(recording_id: uuid.UUID, ctx: Manager, db: DbDep, meeting: bool = False) -> Response:
+    """Delete one recording, or with `meeting=true` every part of the meeting it belongs to (a meeting of
+    hours is hundreds of one-minute parts). Only parts the caller may see are deleted."""
     recording = svc.get_visible_recording(db, ctx, recording_id)
-    svc.delete_recording(db, ctx, recording)
+    targets = [recording]
+    if meeting:
+        parts = meetings.session_parts(db, recording)
+        allowed = {
+            r.id
+            for r in db.scalars(svc.visible_recordings(ctx).where(Recording.id.in_([p.id for p in parts])))
+        }
+        targets = [p for p in parts if p.id in allowed]
+    for target in targets:
+        if target.deleted_at is None:
+            svc.delete_recording(db, ctx, target)
     db.commit()
     return Response(status_code=204)
 
 
 @router.post("/api/recordings/{recording_id}/reprocess", response_model=RecordingOut, status_code=202)
-def reprocess_recording(recording_id: uuid.UUID, ctx: Manager, db: DbDep) -> RecordingOut:
+def reprocess_recording(recording_id: uuid.UUID, request: Request, ctx: Manager, db: DbDep) -> RecordingOut:
     recording = svc.get_visible_recording(db, ctx, recording_id)
+    if not _storage(request).exists(recording.storage_key):
+        # The audio was removed after processing (ASK_DELETE_AUDIO_AFTER_PROCESSING): nothing to work from.
+        raise ApiError(
+            409,
+            "audio_not_kept",
+            "The audio of this recording is no longer on the server, so it cannot be processed again.",
+        )
     svc.reprocess(db, ctx, recording)
     db.commit()
     return svc.recording_outs(db, [recording])[0]

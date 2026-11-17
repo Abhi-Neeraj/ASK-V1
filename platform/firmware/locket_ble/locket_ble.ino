@@ -42,8 +42,8 @@ void setup() {
   settings::begin();
   if (ASK_ALLOW_PLAIN_HTTP) Serial.println(F("WARNING: plain http firmware downloads are allowed. Development only."));
   if (ASK_TEST_PASSKEY >= 0) {
-    Serial.printf("WARNING: TEST BUILD: the Bluetooth pairing code is fixed (ASK_TEST_PASSKEY in config.h). "
-                  "Set it to -1 for a real locket.\n");
+    Serial.printf("WARNING: TEST BUILD: the Bluetooth pairing code is fixed (ASK_TEST_PASSKEY). "
+                  "Build without -DASK_TEST_PASSKEY for a real locket.\n");
   }
 
   if (ESP.getPsramSize() == 0) {

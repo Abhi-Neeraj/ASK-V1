@@ -2,7 +2,9 @@ import React from "react";
 import { Text, View } from "react-native";
 import { router, useFocusEffect } from "expo-router";
 import { useLocketController } from "@/application/locketController";
+import { isWorking } from "@/application/labels";
 import { useSession } from "@/application/session";
+import { useCachedState } from "@/application/useCachedState";
 import { StatRow } from "@/components/primitives";
 import { RecordingRow } from "@/components/RecordingRow";
 import { Button, Card, Gap, Loading, Notice, Page, uiText } from "@/components/ui";
@@ -12,9 +14,9 @@ import { ScreenSection } from "@/components/primitives";
 export default function Today() {
   const { api, user } = useSession();
   const locket = useLocketController();
-  const [lockets, setLockets] = React.useState<LocketOut[] | null>(null);
-  const [recent, setRecent] = React.useState<RecordingOut[]>([]);
-  const [summary, setSummary] = React.useState<WorkspaceSummary | null>(null);
+  const [lockets, setLockets] = useCachedState<LocketOut[] | null>("lockets", null);
+  const [recent, setRecent] = useCachedState<RecordingOut[]>("today:recent", []);
+  const [summary, setSummary] = useCachedState<WorkspaceSummary | null>("today:summary", null);
   const [error, setError] = React.useState<string | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
 
@@ -32,13 +34,38 @@ export default function Today() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load today.");
     }
-  }, [api]);
+  }, [api, setLockets, setRecent, setSummary]);
 
   useFocusEffect(
     React.useCallback(() => {
       void load();
     }, [load]),
   );
+
+  // New recordings and their transcripts show up by themselves: while one is on its way or being processed, the
+  // recent list is asked for again every 3 seconds (every 12 while a locket is just connected), never while the page
+  // is hidden, and the screen is redrawn only when something changed.
+  const working = recent.some((r) => isWorking(r.state));
+  const loadRecent = React.useCallback(async () => {
+    try {
+      const page = await api.listRecordings({ pageSize: 5 });
+      setRecent((current) => (JSON.stringify(current) === JSON.stringify(page.items) ? current : page.items));
+    } catch {
+      // a failed look is not shown as an error; the next one tries again
+    }
+  }, [api, setRecent]);
+  React.useEffect(() => {
+    const busy = working || locket.pending > 0;
+    if (!busy && !locket.connected) return;
+    const timer = setInterval(
+      () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+        void loadRecent();
+      },
+      busy ? 3000 : 12000,
+    );
+    return () => clearInterval(timer);
+  }, [working, locket.pending, locket.connected, loadRecent]);
 
   const refresh = async () => {
     setRefreshing(true);

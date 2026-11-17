@@ -40,6 +40,20 @@ describe("createClient", () => {
     expect(calls[3].init.body).toBe(JSON.stringify({ email: "a" }));
   });
 
+  it("a_dropped_request_is_tried_again_within_a_second_and_the_whole_wait_stays_short", async () => {
+    const { fetchImpl } = fakeFetch(() => new Response("Bad gateway", { status: 502 }));
+    const waits: number[] = [];
+    const client = createClient({
+      base: "http://api",
+      fetchImpl,
+      tokens: memoryTokenStore(),
+      wait: async (ms) => void waits.push(ms),
+    });
+    await client.request("GET", "/api/lockets").catch(() => undefined);
+    expect(waits[0]).toBeLessThanOrEqual(1000);
+    expect(waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(40_000);
+  });
+
   it("gives_up_with_a_clear_message_when_the_server_stays_down", async () => {
     const { calls, fetchImpl } = fakeFetch(() => new Response("Bad gateway", { status: 502 }));
     const client = createClient({ base: "http://api", fetchImpl, tokens: memoryTokenStore(), wait: async () => {} });

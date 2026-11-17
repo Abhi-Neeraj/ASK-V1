@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { type CapturedPart, RecordingCapture } from "@/application/captureRecording";
 import { BLOCK_BYTES, SAMPLES_PER_BLOCK, encodeAdpcmBlock } from "@/domain/locket/adpcm";
 import type { LocketLink } from "@/domain/locket/link";
@@ -57,7 +57,9 @@ function audioBlocks(count: number): Uint8Array[] {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 const samplesIn = (wav: Uint8Array) => (wav.length - 44) / 2;
 
-function capture(opts: { blocksPerPart?: number; save?: (part: CapturedPart) => Promise<void> } = {}) {
+function capture(
+  opts: { blocksPerPart?: number; save?: (part: CapturedPart) => Promise<void>; now?: () => number } = {},
+) {
   const fake = fakeLink();
   const parts: CapturedPart[] = [];
   const recorder = new RecordingCapture(
@@ -66,7 +68,7 @@ function capture(opts: { blocksPerPart?: number; save?: (part: CapturedPart) => 
       parts.push(part);
       await opts.save?.(part);
     },
-    { blocksPerPart: opts.blocksPerPart },
+    { blocksPerPart: opts.blocksPerPart, now: opts.now },
   );
   recorder.start();
   return { ...fake, parts, recorder };
@@ -108,6 +110,33 @@ describe("RecordingCapture", () => {
 
   it("the_default_part_is_at_most_nine_minutes", () => {
     expect(RecordingCapture.DEFAULT_BLOCKS_PER_PART * SAMPLES_PER_BLOCK).toBeLessThanOrEqual(9 * 60 * 16000);
+  });
+
+  it("the_default_part_is_about_a_minute_so_uploads_start_while_the_meeting_is_still_arriving", () => {
+    const seconds = (RecordingCapture.DEFAULT_BLOCKS_PER_PART * SAMPLES_PER_BLOCK) / 16000;
+    expect(seconds).toBeGreaterThanOrEqual(55);
+    expect(seconds).toBeLessThanOrEqual(65);
+  });
+
+  it("frames_it_already_has_are_answered_with_the_last_confirmation_again_but_not_every_time", () => {
+    let clock = 10_000;
+    const { deliver, sent } = capture({ now: () => clock });
+    const blocks = audioBlocks(70);
+    deliver(frame("START", 0));
+    blocks.forEach((b, i) => deliver(frame("AUDIO", i + 1, b)));
+    expect(sent).toEqual([`ACK ${SID} 32`, `ACK ${SID} 64`]); // 6 more frames since: not yet a confirmation
+    // The locket never got our confirmation, waits five seconds, and sends frames 65.. again: say where we are, once.
+    clock += 5000;
+    for (let seq = 65; seq <= 70; seq += 1) deliver(frame("AUDIO", seq, blocks[seq - 1]));
+    expect(sent).toEqual([`ACK ${SID} 32`, `ACK ${SID} 64`, `ACK ${SID} 70`]);
+    // Still repeating a moment later: no flood of confirmations...
+    clock += 200;
+    deliver(frame("AUDIO", 65, blocks[64]));
+    expect(sent).toHaveLength(3);
+    // ...but if it goes on, we say it again.
+    clock += 400;
+    deliver(frame("AUDIO", 65, blocks[64]));
+    expect(sent).toEqual([`ACK ${SID} 32`, `ACK ${SID} 64`, `ACK ${SID} 70`, `ACK ${SID} 70`]);
   });
 
   it("acks_every_32_frames_and_the_end_only_after_every_part_is_saved", async () => {
@@ -173,6 +202,34 @@ describe("RecordingCapture", () => {
     deliver(frame("END", 4));
     await flush();
     expect(samplesIn(parts[0].wav)).toBe(3 * SAMPLES_PER_BLOCK);
+  });
+
+  it("a_confirmation_whose_write_failed_is_tried_again_but_a_resend_is_not", async () => {
+    vi.useFakeTimers();
+    try {
+      const { deliver, sent, link } = capture();
+      const original = link.send;
+      let failures = 2; // the radio is busy for the first two writes
+      link.send = async (command) => {
+        if (failures-- > 0) throw new Error("GATT operation already in progress");
+        return original(command);
+      };
+      const blocks = audioBlocks(34);
+      deliver(frame("START", 0));
+      blocks.slice(0, 32).forEach((b, i) => deliver(frame("AUDIO", i + 1, b)));
+      expect(sent).toEqual([]); // the first write failed
+      await vi.advanceTimersByTimeAsync(400); // the second try fails too
+      expect(sent).toEqual([]);
+      await vi.advanceTimersByTimeAsync(400); // the third works
+      expect(sent).toEqual([`ACK ${SID} 32`]);
+
+      failures = 1;
+      deliver(frame("AUDIO", 36, blocks[0])); // a gap: asks for a resend, whose write fails
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(sent.filter((c) => c.startsWith("RESEND"))).toEqual([]); // never repeated late
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("asks_from_the_start_for_a_session_it_never_saw", () => {

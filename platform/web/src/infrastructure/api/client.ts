@@ -30,11 +30,13 @@ export type ApiClient = {
 
 const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-// The hosted server (Render's free plan) sleeps when idle and takes about a minute to wake; until then the proxy
-// in front of it answers 502, 503 or 504. Wait and try again for about 75 seconds before giving up. Repeating a
-// request is safe here: uploads carry their own ID and the server acknowledges a repeat without storing it twice.
+// While the server restarts (a new version going live) or a request hits a moment of overload, the proxy in front
+// of it answers 502, 503 or 504. Try again soon and a little later each time, for about 30 seconds before giving
+// up: it used to wait 5 seconds before the first retry (made for a free host that slept), so one dropped request
+// froze a screen for 5 seconds. Repeating a request is safe here: uploads carry their own ID and the server
+// acknowledges a repeat without storing it twice.
 const WAKING = new Set([502, 503, 504]);
-const WAKE_WAITS_MS = [5_000, 10_000, 20_000, 40_000];
+const WAKE_WAITS_MS = [600, 1_500, 4_000, 8_000, 16_000];
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function createClient({

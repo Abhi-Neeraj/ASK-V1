@@ -30,6 +30,14 @@ class RecordingOut(CamelModel):
     # 1, 2, 3 ... when this clip is one part of a longer recording the locket cut up (a button-controlled
     # locket does this for anything longer than the server's clip limit); null for an ordinary single clip.
     part: int | None = None
+    # The locket's reference for the whole meeting this clip belongs to: the same for every part of it, null
+    # for an ordinary clip. Chosen by the locket and shown only to people who can already see the recording.
+    session_ref: str | None = None
+    # For a recording that is one of several parts of a meeting: how many parts have arrived, their total
+    # length and when the first began (so a meeting of hours can be shown as one row). Null otherwise.
+    part_count: int | None = None
+    meeting_duration_ms: int | None = None
+    meeting_started_at: datetime | None = None
     state: str
     retry_count: int
     error: str | None

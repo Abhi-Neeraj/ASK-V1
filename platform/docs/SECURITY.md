@@ -149,7 +149,14 @@ The speech and speaker models are third-party files downloaded from the Hugging 
 ## Bluetooth lockets, pairing codes and firmware links (2026-11-14)
 
 - **Product IDs are permanent.** The application refuses to change a saved locket's `public_id`, and migration
-  0006 adds a database trigger that refuses it too.
+  0006 adds a database trigger that refuses it too. That is the server side and it is unchanged: a "fresh ID" is a
+  new locket registered on the server. On the device (owner's request, 2026-11-17) `locket_ble` gained two serial
+  commands: `unprovision <current ID>` and a reset code (`ASK_SERIAL_RESET_CODE` in `config.h`, sent alone as a
+  line). Each erases the ID, the secret and every pairing, then restarts the locket as unprovisioned, and neither can
+  be reached over Bluetooth. That is no more than erasing the flash does, but it is now one line: anyone with the cable
+  can re-identify a locket, and the reset code is plain text in this public repository and in the binary (set it to
+  `""` to switch it off). The new ID still needs a secret that only the server operator can create. Compiled and run
+  nowhere yet (no toolchain or board here).
 - **Locket secrets are never stored.** Each is `HMAC-SHA256(ASK_LOCKET_MASTER_KEY, product ID)`, shown once at
   registration so it can be written into the locket. Anyone with the master key can make every locket's secret:
   keep it like `ASK_SECRET_KEY`, separately from it (the settings refuse the same value), and never rotate it
@@ -158,7 +165,7 @@ The speech and speaker models are third-party files downloaded from the Hugging 
   make (`HMAC(secret, "ASK-BONDED" + nonce)`, on an encrypted characteristic); the server refuses to add anyone
   without it. The final review found that without this step anyone in a company could join any locket with
   room by inventing a nonce; fixed and tested (`test_paired_needs_the_lockets_bonding_proof`).
-- **Test PIN in `locket_ble` (owner's request, 2026-11-15).** `ASK_TEST_PASSKEY` in `locket_ble/config.h` is set to 1234: the Bluetooth pairing code is that fixed PIN instead of the emailed code, so anyone nearby who knows it can pair and receive meetings. Test lockets only: set it to `-1` for every real locket. The firmware warns at every start (without printing the PIN), and the wrong-code limit still applies. The server side is unchanged (pairing still needs the emailed request and the locket's proof).
+- **Test PIN in `locket_ble` (owner's request 2026-11-15; switched OFF in the committed code 2026-11-17).** `ASK_TEST_PASSKEY` in `locket_ble/config.h` is now `-1` (the emailed code). With a number there the Bluetooth pairing code is that fixed PIN, so anyone nearby who knows it can pair and receive meetings; a test locket on a desk turns it on at build time (`-DASK_TEST_PASSKEY=1234`, see `locket_ble/README.md`) rather than by editing the file. The firmware warns at every start (without printing the PIN), and the wrong-code limit still applies. The server side is unchanged (pairing still needs the emailed request and the locket's proof). Lockets flashed from the earlier code keep the old behaviour until they are flashed again.
 - **The locket side of pairing (`locket_ble`, never run on a board).** The locket's passkey is the same
   six-digit code, from its secret and the number it showed; a new number after every attempt and every 10
   minutes; after 5 wrong codes in 10 minutes the passkey becomes a random value nobody was told. The product ID
@@ -180,6 +187,41 @@ The speech and speaker models are third-party files downloaded from the Hugging 
   the build. Builds are not yet signed by the build machine; the locket checks size and SHA-256 from the
   server, which protects against a broken download but not against a compromised server. Signed images
   (ESP32 Secure Boot) are the next step and **your decision**.
+
+## Review of the 2026-11-17 hand-over code (Bluetooth, Google, Render and Vercel)
+
+A read-through of the code that came back from the other laptop (`Nandu2k03/ask-voice-locket`). Nothing here was
+tested against real Google, Render, Vercel or a locket: the fixes are covered by tests with stand-in clients.
+
+| Finding | Risk | What was done |
+| --- | --- | --- |
+| The committed test firmware paired with **no code** (`ASK_TEST_NO_PASSKEY 1`) and a fixed PIN (`ASK_TEST_PASSKEY 1234`). Anyone in range could pair, read meetings and push a firmware update. | High | The fixed PIN is OFF (`-1`). No-code pairing was set OFF (`0`) and then switched back ON (`1`) the same day at the owner's request, so this finding is **open**: until `ASK_TEST_NO_PASSKEY` is `0` and the locket is flashed again, anyone in range can pair, read meetings and push an update. **Not compiled or flashed here.** |
+| Transcript text goes straight into the Gemini prompt: a spoken "ignore your instructions" could steer the summary, and a very long recording could send a very large (costly) request. | Medium | the transcript sits between `<transcript>` markers with marker-like text removed, the model is told it is speech and never commands, and at most `ASK_GEMINI_MAX_INPUT_CHARS` (1,000,000) characters are sent (the summary says when it was cut). Reduces the risk, cannot remove it. The app shows the summary as plain text (no HTML anywhere in `platform/web`). |
+| Google labels speakers within each 55-second request only, so in a long recording "Speaker 1" can be different people, and matching such a label to an enrolled voice could **name the wrong person**. | Medium | A recording sent in several pieces is marked `labels_linked = False`: no voice matching, and the summarizer is not given speaker numbers. The transcript still shows "Speaker N" labels, which can mix people in long recordings. |
+| Behind Vercel and Render every caller shared one address, so one rate-limit bucket (a few wrong passwords lock sign-in for everyone). | Medium | `render.yaml` now sets `ASK_TRUST_FORWARDED_FOR=true`, `ASK_TRUSTED_PROXY_HOPS=1`. See below. **Not deployed or observed.** |
+
+### Client address behind Vercel and Render
+
+The site rewrites `/api/*` from Vercel to the API host, so the API sees two proxies. With one hop the server reads the last
+`X-Forwarded-For` entry, which only the proxy in front of the service writes, so a caller cannot choose it. What that
+entry actually holds (the person's address, or one of Vercel's) was **not observed**. To check after deploying: sign in
+once from your own connection, then read the sign-in's address in the audit log (administrator only). If it is your
+public address, per-person limits work. If it is a Vercel or Render address, everyone still shares a bucket; the fix is
+a proxy you control that sets a trusted header, not a higher hop count. **Do not raise `ASK_TRUSTED_PROXY_HOPS`
+without that check:** too high, and a caller can write their own address into the header and walk around the sign-in
+limit.
+
+### Left for the owner (nothing here can be done from the code)
+
+- **The repository is public and holds a test hotspot** (`ESPTEST` / `12345678`, in the Wi-Fi sketches' `config.h`).
+  Change that hotspot's password; deleting the file now does not remove it from the history.
+- **Rotate the two Google keys** (they were pasted into a chat) and the **Postgres password** printed in a tool log.
+- **`ASK_ENV=development` and log-only email** on the hosted API: switch to production only with real SMTP set up.
+- **Render's free plan** sleeps after 15 minutes, its database expires after 30 days and audio does not survive a
+  restart: fine for a demo, not for real recordings.
+- **Firmware updates are checked by size and SHA-256 only**, both supplied by whoever the phone trusts; there is no
+  signature. A signed-image check (and flash encryption) is a separate piece of work.
+- **Audio and transcripts go to Google**: tell the people being recorded.
 
 ## Known limits
 
@@ -203,11 +245,32 @@ The speech and speaker models are third-party files downloaded from the Hugging 
 
 There is no public reporting channel yet. Decide one before you deploy (an address, a person) and put it where users can find it.
 
-## Test-only: Bluetooth pairing with no code (2026-11-15, at the owner's request)
+## Website: what the browser remembers (2026-11-17)
 
-`platform/firmware/locket_ble/config.h` has `ASK_TEST_NO_PASSKEY` (1 in the test build). With it on, the locket pairs
-with "Just Works": the link is encrypted but nobody is verified, so **anyone nearby can pair with the locket and receive
-its meetings**. The server still checks the locket's proof of the bond before it records the owner, but that does not
-stop a nearby stranger from pairing first. It prints a warning at every start. Set it to 0 (which restores the
-`ASK_TEST_PASSKEY` PIN, or the emailed code when that is -1) for any locket that leaves the desk. Never run it in a
-shared space. Compiled, not run on a board.
+To open instantly, the website keeps **this tab's** last answers in `sessionStorage` (never on disk, never shared with other
+tabs, gone when the tab closes): the signed-in person's name, email and role (`ask-user`, with the CSRF token blanked),
+and the lists of lockets and recordings (`ask-cache:*`: titles, times, state). Transcripts and summaries are held in
+memory only (gone on reload). Everything is cleared at sign-out and when the server says the session ended. It is display
+only: the server checks the session and the role on every request, and the screen shows the server's answer a moment
+later.
+
+## Test-only: Bluetooth pairing with no code (owner's request 2026-11-15; off after the 2026-11-17 review; ON again the same day at the owner's request)
+
+`platform/firmware/locket_ble/config.h` has `ASK_TEST_NO_PASSKEY`, `1` in the committed code again (the review set it
+to `0`; the owner asked for it back so the locket connects directly). With it on, the locket pairs with "Just Works": the link is encrypted but nobody is verified, so **anyone nearby
+can pair with the locket, receive its meetings and push it a firmware update** (the commands are accepted on any
+encrypted link in this mode). The server still checks the locket's proof of the bond before it records the owner, but
+that does not stop a nearby stranger from pairing first. It prints a warning at every start. Use it for a locket on a
+desk, never in a shared space, and set it to `0` and flash again before a locket goes to anyone else. This is the
+owner's decision and the review's highest finding stays open while it is on. The change was not compiled or flashed
+here (no C++ toolchain or board on this machine).
+
+**Changed 2026-11-17 (evening), same owner request ("pairing must never need forgetting the device"):** in this mode
+the locket now uses **no link encryption and keeps no bonds at all** (the characteristics are plain, bonding is off,
+and the stored bonds are erased at start-up). Before, "Just Works" bonds were kept on the phone and on the locket, and
+whenever one side lost its half (a new product ID, a bond reset) the phone showed "pairing failed" until the locket
+was forgotten in the phone's Bluetooth settings. With nothing bonded, that cannot happen again. What this costs, on top
+of the above: **audio and commands cross the air unencrypted**, so someone with a Bluetooth sniffer in range can listen
+to a meeting while it is sent, not only pair and ask for it. Phones that still hold an old bond from before this change
+need the old ASK device forgotten once; after that nothing is bonded. With `ASK_TEST_NO_PASSKEY 0` the behaviour is
+unchanged: the emailed code, an encrypted and authenticated link, bonding. Not compiled or flashed here.

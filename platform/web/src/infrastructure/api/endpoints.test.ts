@@ -61,11 +61,13 @@ describe("endpoints", () => {
     await api.listRecordings({ q: "panel", page: 2 });
     await api.getRecording("r1");
     await api.deleteRecording("r1");
+    await api.deleteMeeting("r1");
     await api.reprocess("r1");
     await api.listLockets();
     await api.registerLocket("Desk");
     await api.requestPairingCode("ASK-1", "00".repeat(16));
     await api.confirmPaired("ASK-1", "00".repeat(16), "ab".repeat(32));
+    await api.deleteLocket("ASK-1");
     await api.removeMember("ASK-1", "u2");
     await api.setLimit("ASK-1", 2);
     await api.latestFirmware();
@@ -83,11 +85,13 @@ describe("endpoints", () => {
       "GET /api/recordings?q=panel&page=2&pageSize=20",
       "GET /api/recordings/r1",
       "DELETE /api/recordings/r1",
+      "DELETE /api/recordings/r1?meeting=true",
       "POST /api/recordings/r1/reprocess",
       "GET /api/lockets",
       "POST /api/lockets",
       "POST /api/lockets/ASK-1/pairing-code",
       "POST /api/lockets/ASK-1/paired",
+      "DELETE /api/lockets/ASK-1",
       "DELETE /api/lockets/ASK-1/members/u2",
       "PATCH /api/lockets/ASK-1/limit",
       "GET /api/firmware/latest",
@@ -98,8 +102,8 @@ describe("endpoints", () => {
       "PATCH /api/members/u2",
       "GET /api/summary",
     ]);
-    expect(JSON.parse(String(calls[11].init.body))).toEqual({ nonce: "00".repeat(16), proof: "ab".repeat(32) });
-    expect(JSON.parse(String(calls[13].init.body))).toEqual({ maxUsers: 2 });
+    expect(JSON.parse(String(calls[12].init.body))).toEqual({ nonce: "00".repeat(16), proof: "ab".repeat(32) });
+    expect(JSON.parse(String(calls[15].init.body))).toEqual({ maxUsers: 2 });
   });
 
   it("text_files_and_audio_urls", async () => {

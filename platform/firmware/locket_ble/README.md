@@ -11,7 +11,7 @@ compiled. Expect fixes on first use; the board checklist is in `platform/docs/HA
 ## What it does
 
 1. **Records** exactly like `locket_web_upload`: press the button to start, again to stop. Audio goes microphone
-   -> PSRAM ring -> card, as 16 kHz WAV parts of five minutes in `/pending`. (`recorder`, `sdwriter`, `storage`,
+   -> PSRAM ring -> card, as 16 kHz WAV parts in `/pending` (a minute each for the first 30 minutes of a meeting so the audio crosses Bluetooth while people are still talking, then five minutes each). A recording can run for up to 6 hours (`kMaxSessionSeconds`; about 690 MB on the card, so use a card with at least 1 GB free). (`recorder`, `sdwriter`, `storage`,
    `status`, `core` are copies of that sketch's files; `storage` adds `readAt`.)
 2. **Pairs** with the phone: it advertises its product ID (`ASK-XXXXXX`). The phone reads a fresh 16-byte number
    from PAIR_NONCE, the server emails the person a six-digit code made from it, and the person types the code in
@@ -31,12 +31,28 @@ compiled. Expect fixes on first use; the board checklist is in `platform/docs/HA
    url`. The download must be https (certificates checked against the core's built-in list), the size and
    SHA-256 must match, and a new firmware that does not get as far as starting Bluetooth is rolled back.
 
-## Test PIN (test lockets only)
+## Test pairing switches (test lockets only)
 
-`ASK_TEST_PASSKEY` in `config.h` is **1234** in this build, by the owner's request: when the phone or browser asks
-for the Bluetooth pairing code, type 1234 instead of the emailed code. Anyone nearby who knows it can pair, so set it to
-`-1` (the emailed code) for every real locket. Still pair through the ASK website or app, not the phone's Bluetooth
-settings: the server records who the locket belongs to only that way.
+`config.h` now has `ASK_TEST_PASSKEY -1` (no fixed PIN) and **`ASK_TEST_NO_PASSKEY 1`: the locket pairs with no code
+at all and connects directly.** The security review of 2026-11-17 switched the no-code mode off; the owner switched it
+back on the same day because the locket should connect directly. While it is on, **anyone within Bluetooth range can
+pair with the locket, read its meetings and push it a firmware update.** Use it for a locket on a desk. For any locket
+that leaves the desk, set `ASK_TEST_NO_PASSKEY` to `0` (pairing then needs the six-digit code the server emails, which in
+development mode only appears in the server's log) and flash again.
+
+In this mode the locket also uses **no encryption and keeps no bonds** (since 2026-11-17 evening): nothing is stored on
+the phone or the locket, so the "forget the ASK device in the phone's Bluetooth settings" step is needed at most once,
+for a bond an older build made, and never again. The price: audio and commands cross the air unencrypted. The sender
+also never has more than `kSendWindowFrames` (96) frames beyond the phone's last confirmation in flight, sends one
+frame every 12 ms, and its "the phone went quiet" log line now says what the phone last confirmed, the last frame sent
+and how often the Bluetooth stack refused a frame. Not compiled or flashed here.
+
+Every start prints a warning while the no-code mode is on. Pair through the ASK website or app, not the phone's
+Bluetooth settings: the server records who the locket belongs to only that way, and it still checks the locket's proof
+of the bond. A different mode can be switched on at build time without editing the file, for example
+`--build-property "compiler.cpp.extra_flags=-DASK_TEST_NO_PASSKEY=0"` (arduino-cli).
+
+This change (one constant) was **not compiled or flashed here**: there is no C++ toolchain or board on this machine.
 
 ## Build
 
@@ -50,15 +66,38 @@ Keep the board package in a short folder on Windows: a deep path breaks the comp
 
 ## Manufacturing (once per locket)
 
-1. On the server: `python -m app.cli register-locket --company-id <UUID> --name "..."` prints the product ID and
-   the secret, once.
-2. On the locket's USB serial console (115200 baud): `provision <productId> <secretHex>`. A second `provision` is
-   refused: the product ID can never change. Restart.
+1. Register the locket on the server: on the website, Lockets, **Register a new locket** (it shows the whole
+   `provision` line, once), or `python -m app.cli register-locket --company-id <UUID> --name "..."`.
+2. On the locket's USB serial console (115200 baud): `provision <productId> <secretHex>`. While a locket has an
+   ID, `provision` is refused. Restart.
+
+### Giving a locket a fresh ID
+
+A locket that already has an ID (see `status`) keeps it until it is wiped. The server never changes or reuses an ID,
+so a fresh ID means registering a **new** locket on the server and writing it into this one:
+
+1. Register a new locket on the website (step 1 above) and keep the `provision` line it shows.
+2. On the USB serial console, either send the **reset code** (the number set as `ASK_SERIAL_RESET_CODE` in
+   `config.h`, sent alone as a line) or type `unprovision <the CURRENT product ID>` (the one `status` shows). Both
+   erase the ID, the secret and every paired phone, then restart. The recording parts on the card stay there and go
+   to whichever phone pairs next.
+3. After the restart: paste the `provision` line from step 1, then `reboot`.
+4. **On the phone: forget the locket.** The locket erased its side of the Bluetooth bond, but the phone kept its own.
+   In the phone's Bluetooth settings, forget every `ASK-...` device before pairing again, or pairing fails
+   (`[BLE] pairing failed: stack status -1` on the serial monitor, or "Some fields are not valid" in the app).
+
+The reset code and `unprovision` were added 2026-11-17 at the owner's request. They work only over the USB cable;
+nothing sent over Bluetooth reaches the console. The code is plain text in `config.h` and in the compiled firmware (and
+this repository is public), so it protects nothing beyond what holding the cable already allows; set it to `""` to
+switch it off. Without it the same result needs the board setting **Erase All
+Flash Before Sketch Upload: Enabled** when flashing, which wipes everything the locket stored (Wi-Fi for updates too).
+Not compiled or run on a board here (no toolchain or board on this machine).
 
 ## Serial console
 
-`help`, `status`, `provision`, `record` (one press), `wifi clear`, `forget all` (remove every paired phone),
-`reboot`. The secret, the pairing code, the bond proof and the Wi-Fi password are never printed.
+`help`, `status`, `provision`, `unprovision <current ID>` (erase the ID so a new one can be provisioned), `record` (one
+press), `wifi clear`, `forget all` (remove every paired phone), `reboot`. The secret, the pairing code, the bond proof
+and the Wi-Fi password are never printed.
 
 ## Files
 

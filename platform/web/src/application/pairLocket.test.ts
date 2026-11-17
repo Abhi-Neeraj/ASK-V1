@@ -104,6 +104,16 @@ describe("pairLocket", () => {
     expect(outcome).toMatchObject({ ok: false, reason: "proof_rejected" });
   });
 
+  it("an_empty_proof_is_not_sent_to_the_server", async () => {
+    const { link } = fakeLink();
+    link.readProof = async () => "";
+    const { api, calls } = fakeApi();
+    const outcome = await pairLocket({ link, api, deviceId: "d", productId: "ASK-7KQ2MX", onCodeSent: () => {} });
+    expect(outcome).toMatchObject({ ok: false, reason: "proof_rejected" });
+    expect(outcome.ok === false && outcome.message).toContain("forget the ASK-");
+    expect(calls.every((c) => c.startsWith("code"))).toBe(true); // confirmPaired was never called
+  });
+
   it("an_expired_request_is_reported", async () => {
     const { link } = fakeLink();
     const { api } = fakeApi({ confirm: new ApiError(404, "pairing_request_not_found", "Expired.") });

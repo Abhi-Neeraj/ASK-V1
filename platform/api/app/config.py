@@ -128,6 +128,20 @@ class Settings(BaseSettings):
     google_stt_language: str = "en-US"
     gemini_api_key: SecretStr | None = None  # never logged
     gemini_model: str = "gemini-2.5-flash"
+    # The most transcript text (characters) sent to Gemini for one summary: a cost cap, and a limit on how
+    # much a single recording can push into the prompt. Longer transcripts are cut at a line end and the
+    # summary says so. Speech comes to about 55,000 characters an hour, so the default of 1,000,000 covers
+    # about 18 hours (a 5-hour meeting is about 275,000; the model's own limit is several million).
+    gemini_max_input_chars: int = Field(default=1_000_000, ge=1_000, le=2_000_000)
+    # Delete a recording's audio file from the server once its transcript is saved. The phone keeps its own
+    # copy of what it received. For a server whose disk is small: an hour of audio is 115 MB, so a few hours
+    # fill a 500 MB volume; transcripts and summaries are a few hundred kilobytes. Off by default (audio is
+    # kept). With it on, playback and "process again" are not available once the audio has been removed.
+    delete_audio_after_processing: bool = False
+    # How much Gemini may "think" before it writes the summary. 0 switches thinking off: on the real service
+    # the summary of a meeting took about 6 s with the default and about 2 s without, and a summary of what
+    # was said needs no reasoning. -1 leaves the model's own default (for a model that needs to think).
+    gemini_thinking_budget: int = Field(default=0, ge=-1, le=24_576)
     ai_asr_model: str = "small"  # a faster-whisper model size, or a path to a converted model
     ai_asr_device: str = "auto"
     ai_asr_compute_type: str = "int8"

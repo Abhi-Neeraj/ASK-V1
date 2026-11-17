@@ -41,6 +41,9 @@ export type WebBluetooth = {
   getAvailability?(): Promise<boolean>;
 };
 
+// Reads and writes get a few seconds; connecting, and a read that makes the system ask for a code, wait for a person.
+const OPERATION_TIMEOUT_MS = 15_000;
+const SLOW_OPERATION_TIMEOUT_MS = 120_000;
 const PICK_AGAIN = "Open Lockets and press Find lockets nearby to choose the locket in this browser tab.";
 const text = (view: DataView) => new TextDecoder().decode(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
 const bytes = (view: DataView) => new Uint8Array(view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength));
@@ -61,9 +64,26 @@ export class WebBluetoothLocketLink implements LocketLink {
     this.bondRetryMs = options.bondRetryMs ?? 1500;
   }
 
-  /** Runs Bluetooth operations one after another. */
-  private run<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.queue.then(operation, operation);
+  /**
+   * Runs Bluetooth operations one after another. An operation that never answers (a write the radio dropped) gives up
+   * after `timeoutMs`, so it can never hold every later read and confirmation back for ever.
+   */
+  private run<T>(operation: () => Promise<T>, timeoutMs = OPERATION_TIMEOUT_MS): Promise<T> {
+    const guarded = () =>
+      new Promise<T>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("The locket did not answer in time.")), timeoutMs);
+        operation().then(
+          (value) => {
+            clearTimeout(timer);
+            resolve(value);
+          },
+          (error: unknown) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      });
+    const next = this.queue.then(guarded, guarded);
     this.queue = next.catch(() => undefined);
     return next;
   }
@@ -139,7 +159,7 @@ export class WebBluetoothLocketLink implements LocketLink {
       }
       this.chars = chars;
       this.device = device;
-    });
+    }, SLOW_OPERATION_TIMEOUT_MS);
   }
 
   async disconnect(): Promise<void> {
@@ -178,7 +198,10 @@ export class WebBluetoothLocketLink implements LocketLink {
   }
 
   async readProof(): Promise<string> {
-    return this.run(async () => text(await this.characteristic(LOCKET_UUIDS.bondProof).readValue()).trim());
+    return this.run(
+      async () => text(await this.characteristic(LOCKET_UUIDS.bondProof).readValue()).trim(),
+      SLOW_OPERATION_TIMEOUT_MS,
+    );
   }
 
   async send(command: string): Promise<void> {

@@ -111,12 +111,17 @@ class Security : public BLESecurityCallbacks {
         char proof[65];
         askble::bond_proof_hex(secret, nonce, proof);
         if (proofChar) proofChar->setValue((uint8_t*)proof, 64);
+        Serial.println(F("[BLE] bond made: proof ready"));
         newNonce();
       }
     } else {
       encrypted = false;
       Serial.printf("[BLE] pairing failed: stack status %d", status);
       Serial.println();
+      // The usual cause: the phone still holds a bond from before this locket's bonds were erased (a new ID, a
+      // reset). Only forgetting the locket in the phone's Bluetooth settings clears that.
+      Serial.println(F("[BLE] If this phone paired with this locket before: forget the ASK-... device in the phone's "
+                       "Bluetooth settings, then pair again."));
     }
     refreshInfo();
     return;
@@ -164,14 +169,25 @@ class Security : public BLESecurityCallbacks {
 class ServerEvents : public BLEServerCallbacks {
   void onConnect(BLEServer*, ble_gap_conn_desc* desc) override {
     linkUp = true;
-#if ASK_TEST_NO_PASSKEY
-    encrypted = desc->sec_state.encrypted;  // TEST ONLY: no passkey, so nothing can be "authenticated"
-#else
-    encrypted = desc->sec_state.encrypted && desc->sec_state.authenticated;
-#endif
     passkeyShown = false;
     connHandle = desc->conn_handle;
     connectedMs = millis();
+#if ASK_TEST_NO_PASSKEY
+    // TEST ONLY (no-code mode): the link is NOT encrypted and nothing is ever bonded, so there is no bond on either
+    // side that can go stale ("forget the ASK device in the phone's settings" is never needed again), and nothing
+    // can ask for a pairing that fails. The proof is ready at once, for the number the phone reads. This locket's
+    // number does not change while a phone is connected, so the phone's proof and number always belong together.
+    encrypted = true;  // here: "the link is usable"
+    knownPeer = false;
+    if (proofChar) {
+      char proof[65];
+      askble::bond_proof_hex(secret, nonce, proof);
+      proofChar->setValue((uint8_t*)proof, 64);
+    }
+    refreshInfo();
+    return;
+#endif
+    encrypted = desc->sec_state.encrypted && desc->sec_state.authenticated;
     if (proofChar) proofChar->setValue((uint8_t*)"", 0);
     // A phone this locket is bonded with is asked to re-encrypt at once; anyone else is left alone until the phone
     // app reads BOND_PROOF, which starts pairing only once the code has been emailed.
@@ -197,7 +213,12 @@ class ServerEvents : public BLEServerCallbacks {
 
 class ControlWrites : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c, ble_gap_conn_desc* desc) override {
-    const bool trusted = desc->sec_state.encrypted && (ASK_TEST_NO_PASSKEY || desc->sec_state.authenticated);
+#if ASK_TEST_NO_PASSKEY
+    const bool trusted = true;  // TEST ONLY: no encryption in the no-code mode
+    (void)desc;
+#else
+    const bool trusted = desc->sec_state.encrypted && desc->sec_state.authenticated;
+#endif
     if (!trusted || commandHandler == nullptr) return;
     String value = c->getValue();
     if (value.length() == 0 || value.length() > askble::kMaxCommandBytes) return;
@@ -205,9 +226,38 @@ class ControlWrites : public BLECharacteristicCallbacks {
   }
 };
 
+// BOND_PROOF reads. TEST ONLY (the no-code mode): a phone this locket already has a bond with comes back encrypted
+// without a new pairing, so `finish` never made a proof for it, and the app sent the server an empty proof and was
+// refused ("Some fields are not valid"). Such a phone now gets the proof for the current number when it reads it.
+// With a code (the normal build) this does nothing: a proof is given only for a bond made just now with the emailed
+// code. (No `override`, as with onAuthenticationComplete above: if a board package spells this callback differently
+// it is simply never called, and the locket behaves as before.)
+class ProofReads : public BLECharacteristicCallbacks {
+ public:
+  void onRead(BLECharacteristic* c, ble_gap_conn_desc* desc) {
+#if ASK_TEST_NO_PASSKEY
+    (void)desc;
+    if (c == nullptr) return;
+    if (c->getValue().length() != 0) return;  // the proof set when the phone connected is already in place
+    char proof[65];
+    askble::bond_proof_hex(secret, nonce, proof);
+    c->setValue((uint8_t*)proof, 64);
+    // The number is NOT changed here. This read and the pairing's own proof (`finish`) can come in either order;
+    // if this one rotated the number, a proof made afterwards would be for the NEW number while the phone told the
+    // server the OLD one, and the server refused it ("The locket did not confirm this pairing"). Both now use the
+    // same number, so the proof is right whichever comes first.
+    Serial.println(F("[BLE] bond proof given to a phone this locket already knows"));
+#else
+    (void)c;
+    (void)desc;
+#endif
+  }
+};
+
 static Security security;
 static ServerEvents serverEvents;
 static ControlWrites controlWrites;
+static ProofReads proofReads;
 
 bool begin(const String& productId) {
   if (!identity::secret(secret)) return false;
@@ -216,16 +266,17 @@ bool begin(const String& productId) {
   BLEDevice::setMTU(kRequestedMtu);
   BLEDevice::setSecurityCallbacks(&security);
 #if ASK_TEST_NO_PASSKEY
-  Serial.println(F("WARNING: TEST BUILD: Bluetooth pairing needs NO code (ASK_TEST_NO_PASSKEY in config.h). Anyone nearby can pair."));
-  BLESecurity::setCapability(ESP_IO_CAP_NONE);  // no code: the phone and the locket just pair
-  BLESecurity::setAuthenticationMode(true, false, true);  // bonding, no MITM protection, LE Secure Connections
+  Serial.println(F("WARNING: TEST BUILD (ASK_TEST_NO_PASSKEY): no pairing code, NO encryption and no bonds. Anyone nearby "
+                   "can connect, read meetings and send commands, and audio crosses the air unencrypted."));
+  BLESecurity::setCapability(ESP_IO_CAP_NONE);
+  BLESecurity::setAuthenticationMode(false, false, false);  // never bond: nothing to forget on either side, ever
 #else
   BLESecurity::setCapability(ESP_IO_CAP_OUT);  // Display Only: the phone types the code
   BLESecurity::setAuthenticationMode(true, true, true);  // bonding, MITM protection, LE Secure Connections
-#endif
   BLESecurity::setInitEncryptionKey();
   BLESecurity::setRespEncryptionKey();
   BLESecurity::setForceAuthentication(false);  // pairing starts when the phone reads BOND_PROOF, not on connect
+#endif
 
   server = BLEDevice::createServer();
   if (server == nullptr) return false;
@@ -235,17 +286,28 @@ bool begin(const String& productId) {
 
   infoChar = service->createCharacteristic(kInfo, BLECharacteristic::PROPERTY_READ);
   nonceChar = service->createCharacteristic(kPairNonce, BLECharacteristic::PROPERTY_READ);
-  // Without a passkey a link can be encrypted but never "authenticated", so the test mode asks for encryption only.
-  const uint32_t authRead = ASK_TEST_NO_PASSKEY ? 0 : BLECharacteristic::PROPERTY_READ_AUTHEN;
-  const uint32_t authWrite = ASK_TEST_NO_PASSKEY ? 0 : BLECharacteristic::PROPERTY_WRITE_AUTHEN;
+#if ASK_TEST_NO_PASSKEY
+  // TEST ONLY: plain characteristics. Nothing asks the phone's system to pair or encrypt, so there is no pairing
+  // dialog, no bond to go stale, and no step that can fail with a "stack status" error.
+  BLECharacteristic* control = service->createCharacteristic(kControl, BLECharacteristic::PROPERTY_WRITE);
+  control->setCallbacks(&controlWrites);
+  proofChar = service->createCharacteristic(kBondProof, BLECharacteristic::PROPERTY_READ);
+  proofChar->setCallbacks(&proofReads);
+  statusChar = service->createCharacteristic(
+      kStatus, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY);
+#else
   BLECharacteristic* control = service->createCharacteristic(
-      kControl, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC | authWrite);
+      kControl, BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_ENC |
+                    BLECharacteristic::PROPERTY_WRITE_AUTHEN);
   control->setCallbacks(&controlWrites);
   proofChar = service->createCharacteristic(
-      kBondProof, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC | authRead);
+      kBondProof, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC |
+                      BLECharacteristic::PROPERTY_READ_AUTHEN);
+  proofChar->setCallbacks(&proofReads);
   statusChar = service->createCharacteristic(
       kStatus, BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_READ_ENC |
                    BLECharacteristic::PROPERTY_NOTIFY);
+#endif
   audioChar = service->createCharacteristic(kAudio, BLECharacteristic::PROPERTY_NOTIFY);
 
   newNonce();
@@ -256,6 +318,11 @@ bool begin(const String& productId) {
   advertising->addServiceUUID(kService);
   advertising->setScanResponse(true);
   BLEDevice::startAdvertising();
+#if ASK_TEST_NO_PASSKEY
+  // Drop every bond this locket kept from earlier builds (they were made with the old, encrypted setup): a phone that
+  // still remembers one is told "no key" cleanly, instead of the locket and the phone each holding half of a bond.
+  ble_store_clear();
+#endif
   Serial.printf("[BLE] advertising as %s\n", productId.c_str());
   return true;
 }

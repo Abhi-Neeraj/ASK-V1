@@ -64,6 +64,7 @@ static QueueHandle_t commands = nullptr;
 static TaskHandle_t task = nullptr;
 static volatile uint32_t lastSent = 0;
 static char activeId[17] = "";
+static uint32_t refused = 0;  // frames the Bluetooth stack would not take since the last stall note (for the log)
 
 static const uint32_t kEndRepeatMs = 10000;  // send END again if the phone has not acknowledged it
 
@@ -319,6 +320,11 @@ static void handle(const Message& c) {
       meeting.acked = c.seq;
       meeting.progressMs = millis();
     }
+    // The phone says it has everything up to this frame. After a rewind (it went quiet, then its confirmation
+    // arrived late) never send again what it already holds: carry on after the frame it confirmed.
+    if (!meeting.endSent && c.seq >= meeting.next && c.seq <= askble::session_total_blocks(meeting.map)) {
+      meeting.next = c.seq + 1;
+    }
     if (meeting.endSent && c.seq >= meeting.endSeq) deleteMeeting();
   }
 }
@@ -352,8 +358,13 @@ static void run(void*) {
     if ((meeting.next <= total || meeting.endSent) &&
         askble::stall_rewind(meeting.endSent ? meeting.endSeq + 1 : meeting.next, meeting.acked,
                              meeting.progressMs, millis(), &rewindTo)) {
-      Serial.printf("[SEND] the phone went quiet: sending meeting %s again from frame %lu\n", meeting.id,
-                    (unsigned long)rewindTo);
+      // acked = the phone's last confirmation, sent = the last frame handed to Bluetooth, refused = how often the
+      // stack had no room. Many refusals mean the radio is the bottleneck; none means the phone stopped confirming.
+      Serial.printf("[SEND] the phone went quiet: sending meeting %s again from frame %lu (it confirmed %lu, last sent %lu, "
+                    "stack refused %lu, link %s)\n",
+                    meeting.id, (unsigned long)rewindTo, (unsigned long)meeting.acked, (unsigned long)lastSent,
+                    (unsigned long)refused, ble_link::connected() ? "up" : "down");
+      refused = 0;
       meeting.next = rewindTo;
       meeting.endSent = false;
       meeting.progressMs = millis();
@@ -364,10 +375,22 @@ static void run(void*) {
       sent = sendControl(askble::kFrameStart, 0);
       if (sent) meeting.next = 1;
     } else if (meeting.next <= total) {
-      sent = sendAudio(meeting.next);
-      if (sent) {
+      // Never more than kSendWindowFrames beyond what the phone confirmed: then the stack's buffers always have room
+      // for the phone's own writes, and a phone that stops listening stops the locket after a short while, not after
+      // the whole meeting. Waiting here ends when a confirmation comes in (onCommand wakes this task).
+      if (meeting.next > meeting.acked + kSendWindowFrames) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kSendRetryMs));
+        continue;
+      }
+      // Up to kSendBurst frames, stopping at the first one the stack cannot take.
+      for (uint32_t n = 0; n < kSendBurst && meeting.next <= total; n++) {
+        if (!sendAudio(meeting.next)) {
+          refused++;
+          break;
+        }
         lastSent = meeting.next;
         meeting.next++;
+        sent = true;
       }
     } else if (meeting.complete) {
       if (!meeting.endSent || millis() - meeting.endSentMs > kEndRepeatMs) {
@@ -389,7 +412,7 @@ static void run(void*) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     } else {
       // A frame the stack could not take (out of buffers) is sent again after a short pause.
-      vTaskDelay(pdMS_TO_TICKS(sent ? kSendIntervalMs : 50));
+      vTaskDelay(pdMS_TO_TICKS(sent ? kSendIntervalMs : kSendRetryMs));
     }
   }
 }

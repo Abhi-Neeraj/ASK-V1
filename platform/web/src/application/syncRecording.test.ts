@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pendingCount, retryPending, savePart, saveTextFiles } from "@/application/syncRecording";
+import { discardPending, pendingCount, retryPending, savePart, saveTextFiles } from "@/application/syncRecording";
 import { firmwareOffer, startFirmwareUpdate } from "@/application/firmwareUpdate";
 import type { CapturedPart } from "@/application/captureRecording";
 import type { LocketLink } from "@/domain/locket/link";
@@ -66,6 +66,7 @@ describe("savePart and retryPending", () => {
       uploaded: ["rec-SESSION000000001-0"],
       rejected: [],
       reasons: [],
+      waiting: [],
     });
     expect(server.uploads).toEqual([
       {
@@ -97,7 +98,7 @@ describe("savePart and retryPending", () => {
     await savePart({ files, productId: "ASK-7KQ2MX", part: part(0) });
     let online = false;
     const server = api(() => (online ? "ok" : new ApiError(0, "network", "offline")));
-    expect(await retryPending({ api: server, files })).toEqual({ uploaded: [], rejected: [], reasons: [] });
+    expect(await retryPending({ api: server, files })).toEqual({ uploaded: [], rejected: [], reasons: [], waiting: [] });
     expect(await pendingCount(files)).toBe(1);
     online = true;
     expect((await retryPending({ api: server, files })).uploaded).toHaveLength(1);
@@ -117,9 +118,70 @@ describe("savePart and retryPending", () => {
       uploaded: ["rec-SESSION000000002-1"],
       rejected: ["SESSION000000001-0"],
       reasons: ["audio_too_long: Too long."],
+      waiting: [],
     });
     expect(files.store.has("ASK/rejected/SESSION000000001-0.wav")).toBe(true);
     expect(await pendingCount(files)).toBe(0);
+  });
+
+  it("a_locket_the_account_is_not_paired_with_keeps_its_recording_waiting", async () => {
+    const files = memoryFiles();
+    await savePart({ files, productId: "ASK-NOPAIR", part: part(0) });
+    await savePart({ files, productId: "ASK-7KQ2MX", part: { ...part(1), sessionId: "SESSION000000002" } });
+    const server = api((u) =>
+      u.productId === "ASK-NOPAIR" ? new ApiError(404, "not_found", "That locket was not found.") : "ok",
+    );
+    const result = await retryPending({ api: server, files });
+    // The other locket's part still uploads, and the unpaired locket's part is kept, never set aside.
+    expect(result).toEqual({
+      uploaded: ["rec-SESSION000000002-1"],
+      rejected: [],
+      reasons: [],
+      waiting: ["ASK-NOPAIR"],
+    });
+    expect(files.store.has("ASK/pending/SESSION000000001-0.wav")).toBe(true);
+    expect([...files.store.keys()].some((k) => k.startsWith("ASK/rejected"))).toBe(false);
+    expect(await pendingCount(files)).toBe(1);
+  });
+
+  it("once_paired_the_waiting_recording_uploads", async () => {
+    const files = memoryFiles();
+    await savePart({ files, productId: "ASK-NOPAIR", part: part(0) });
+    let paired = false;
+    const server = api(() => (paired ? "ok" : new ApiError(404, "not_found", "That locket was not found.")));
+    expect((await retryPending({ api: server, files })).waiting).toEqual(["ASK-NOPAIR"]);
+    paired = true;
+    const after = await retryPending({ api: server, files });
+    expect(after.uploaded).toEqual(["rec-SESSION000000001-0"]);
+    expect(after.waiting).toEqual([]);
+    expect(await pendingCount(files)).toBe(0);
+  });
+
+  it("a_recording_an_older_version_set_aside_for_not_being_paired_is_put_back", async () => {
+    const files = memoryFiles();
+    const meta = { productId: "ASK-NOPAIR", sessionId: "SESSION000000001", part: 0, startedAt: part(0).startedAt.toISOString() };
+    files.store.set("ASK/rejected/SESSION000000001-0.wav", part(0).wav);
+    files.store.set("ASK/rejected/SESSION000000001-0.json", JSON.stringify({ ...meta, reason: "not_found" }));
+    // Another set-aside part, refused for a real reason, must stay where it is.
+    files.store.set("ASK/rejected/SESSION000000009-0.wav", new Uint8Array([1]));
+    files.store.set("ASK/rejected/SESSION000000009-0.json", JSON.stringify({ ...meta, sessionId: "SESSION000000009", reason: "audio_too_long" }));
+    const server = api(() => "ok");
+    const result = await retryPending({ api: server, files });
+    expect(result.uploaded).toEqual(["rec-SESSION000000001-0"]);
+    expect(files.store.has("ASK/rejected/SESSION000000001-0.wav")).toBe(false);
+    expect(files.store.has("ASK/rejected/SESSION000000009-0.wav")).toBe(true);
+  });
+
+  it("discarding_removes_everything_waiting_and_everything_set_aside", async () => {
+    const files = memoryFiles();
+    await savePart({ files, productId: "ASK-NOPAIR", part: part(0) });
+    await savePart({ files, productId: "ASK-NOPAIR", part: { ...part(1), sessionId: "SESSION000000002" } });
+    files.store.set("ASK/rejected/OLD-0.wav", new Uint8Array([1]));
+    files.store.set("ASK/rejected/OLD-0.json", "{}");
+    files.store.set("ASK/rec-1/audio.wav", new Uint8Array([2])); // an uploaded recording is not touched
+    expect(await discardPending(files)).toBe(3);
+    expect(await pendingCount(files)).toBe(0);
+    expect([...files.store.keys()]).toEqual(["ASK/rec-1/audio.wav"]);
   });
 
   it("signed_out_or_busy_server_waits_instead_of_discarding", async () => {
@@ -127,7 +189,7 @@ describe("savePart and retryPending", () => {
       const files = memoryFiles();
       await savePart({ files, productId: "ASK-7KQ2MX", part: part(0) });
       const server = api(() => new ApiError(status, "x", "later"));
-      expect(await retryPending({ api: server, files })).toEqual({ uploaded: [], rejected: [], reasons: [] });
+      expect(await retryPending({ api: server, files })).toEqual({ uploaded: [], rejected: [], reasons: [], waiting: [] });
       expect(await pendingCount(files)).toBe(1);
     }
   });

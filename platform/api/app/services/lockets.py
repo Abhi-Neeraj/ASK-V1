@@ -22,7 +22,7 @@ from app.schemas.lockets import LocketMemberOut, LocketOut
 from app.security.deps import Ctx
 from app.security.locket_codes import locket_secret, pairing_code, proof_matches
 from app.services.audit import record_audit, record_device_event
-from app.services.devices import new_public_id
+from app.services.devices import new_public_id, revoke_device
 from app.services.email import EmailSender, locket_code_email
 
 
@@ -49,14 +49,23 @@ def mask_email(email: str) -> str:
 
 
 def visible_lockets(ctx: Ctx) -> Select[Device]:
-    """Managers see every locket in their company; everyone else only the lockets they are on."""
-    query = select(Device).where(Device.company_id == ctx.company_id, Device.transport == "bluetooth")
+    """Managers see every locket in their company; everyone else only the lockets they are on. A deleted
+    (revoked) locket is in nobody's list."""
+    query = select(Device).where(
+        Device.company_id == ctx.company_id, Device.transport == "bluetooth", Device.status != "revoked"
+    )
     if not ctx.can_manage:
         query = query.where(
-            Device.status != "revoked",
             exists().where(DeviceMember.device_id == Device.id, DeviceMember.user_id == ctx.user.id),
         )
     return query
+
+
+def delete_locket(db: Session, ctx: Ctx, device: Device) -> None:
+    """Take a locket out of use for good: it is revoked, so nothing can be uploaded to it or paired with it
+    again, and it is gone from every list. Its recordings stay, and its product ID is never given to another
+    locket."""
+    revoke_device(db, ctx, device)
 
 
 def find_locket(db: Session, ctx: Ctx, product_id: str, *, lock: bool = False) -> Device:

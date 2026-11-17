@@ -22,7 +22,7 @@ bool secret(uint8_t out[32]) {
 bool provision(const String& productId, const String& secretHex, String* problem) {
   switch (askble::identity_accept(provisioned(), productId.c_str(), secretHex.c_str())) {
     case askble::Identity::AlreadySet:
-      *problem = "this locket already has its product ID; it can never be changed";
+      *problem = "this locket already has a product ID; send the reset code or type unprovision <current ID> first";
       return false;
     case askble::Identity::BadId:
       *problem = "the product ID must be ASK- and six characters, as the server printed it";
@@ -39,6 +39,32 @@ bool provision(const String& productId, const String& secretHex, String* problem
   memset(bytes, 0, sizeof(bytes));
   if (!ok) *problem = "the flash refused the write";
   return ok;
+}
+
+bool unprovision(const String& productId, String* problem) {
+  if (!provisioned()) {
+    *problem = "this locket has no product ID to remove";
+    return false;
+  }
+  String typed = productId;
+  typed.trim();
+  typed.toUpperCase();
+  if (typed != prefs.getString("product", "")) {
+    *problem = "that is not this locket's product ID; type the ID that status shows";
+    return false;
+  }
+  return erase(problem);
+}
+
+bool erase(String* problem) {
+  // The secret goes first: once it is gone the locket counts as not provisioned, even if the second erase fails.
+  const bool secretGone = prefs.remove("secret");
+  const bool productGone = prefs.remove("product");
+  if (!secretGone || !productGone) {
+    *problem = "the flash refused the erase";
+    return false;
+  }
+  return true;
 }
 
 }  // namespace identity

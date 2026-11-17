@@ -4,6 +4,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { type AudioPlayer, createAudioPlayer } from "expo-audio";
 import { clock, formatDate, formatDuration, isWorking, stateLabel } from "@/application/labels";
 import { canManage, useSession } from "@/application/session";
+import { useCachedState } from "@/application/useCachedState";
 import { saveTextFiles } from "@/application/syncRecording";
 import { ScreenSection } from "@/components/primitives";
 import { Button, Card, Loading, Notice, Page, uiText } from "@/components/ui";
@@ -15,8 +16,10 @@ import { tokens } from "@/theme/tokens";
 export default function Recording() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { api, user } = useSession();
-  const [recording, setRecording] = React.useState<RecordingDetailOut | null>(null);
-  const [summary, setSummary] = React.useState<string | null | "not_ready">(null);
+  const [recording, setRecording] = useCachedState<RecordingDetailOut | null>(`recording:${id}`, null, { persist: false });
+  const [summary, setSummary] = useCachedState<string | null | "not_ready">(`recording:${id}:summary`, null, {
+    persist: false,
+  });
   const [error, setError] = React.useState<string | null>(null);
   const [note, setNote] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState<string | null>(null);
@@ -39,7 +42,7 @@ export default function Recording() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load this recording.");
     }
-  }, [api, id]);
+  }, [api, id, setRecording, setSummary]);
 
   React.useEffect(() => {
     void load();

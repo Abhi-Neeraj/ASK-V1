@@ -45,13 +45,16 @@ class FakeTranscriber:
 
 
 class FakeDiarizer:
-    def __init__(self, turns: Sequence[Turn]) -> None:
+    def __init__(self, turns: Sequence[Turn], *, labels_linked: bool = True) -> None:
         self.turns = tuple(turns)
+        self.labels_linked = labels_linked
         self.calls = 0
 
     def diarize(self, audio: Path) -> Diarization:
         self.calls += 1
-        return Diarization(self.turns, model="test-diarizer", model_version="2.0")
+        return Diarization(
+            self.turns, model="test-diarizer", model_version="2.0", labels_linked=self.labels_linked
+        )
 
 
 class FakeEmbedder:

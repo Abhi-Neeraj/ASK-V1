@@ -1,8 +1,10 @@
 // Receiving a recording from the locket over Bluetooth (spec 5.3). Frames arrive one per notification:
 // START, AUDIO 1..n (IMA ADPCM blocks), END.
 //
-// - Audio is handed on in parts of at most nine minutes (the server takes ten minutes per file at most, and a
-//   whole meeting in memory would be hundreds of megabytes). Each part is decoded to a 16 kHz WAV.
+// - Audio is handed on in parts of about a minute, each decoded to a 16 kHz WAV and uploaded as soon as it is
+//   complete, so the server is already transcribing while the meeting is still arriving and only the last minute
+//   is left when it ends. (It used to be nine minutes: nothing was uploaded until the whole meeting had crossed.)
+//   The server ties the parts of one meeting together and writes one transcript file and one summary for it.
 // - Progress is acknowledged every 32 frames. The END frame is acknowledged (which lets the locket delete the
 //   session from its card) only after every part was saved: a failed save never loses audio.
 // - A gap, a corrupt frame or a wrong-sized block asks the locket to resend from the first missing frame, once
@@ -24,6 +26,10 @@ export type CapturedPart = {
 };
 
 const ACK_EVERY = 32;
+// A repeated frame (the locket went back because a confirmation never reached it) is answered with the last
+// confirmation again, at most this often, or the locket would resend the same frames forever.
+const REACK_EVERY_MS = 500;
+const RETRY_ACK_MS = 400; // a confirmation whose write failed is tried again this soon, up to twice
 const SAMPLE_RATE = 16000;
 const BLOCK_MS = (SAMPLES_PER_BLOCK / SAMPLE_RATE) * 1000;
 
@@ -35,25 +41,28 @@ type Active = {
   part: number;
   askedFrom: number | null;
   sinceAck: number;
+  lastAckAt: number;
   saving: Promise<void>;
   failed: boolean;
 };
 
 export class RecordingCapture {
-  /** Nine minutes of 16 ms blocks. */
-  static readonly DEFAULT_BLOCKS_PER_PART = Math.floor((9 * 60 * 1000) / BLOCK_MS);
+  /** One minute of 16 ms blocks. */
+  static readonly DEFAULT_BLOCKS_PER_PART = Math.floor((60 * 1000) / BLOCK_MS);
 
   private active: Active | null = null;
   private readonly askedUnknown = new Set<string>();
   private readonly blocksPerPart: number;
+  private readonly now: () => number;
 
   constructor(
     private readonly link: LocketLink,
     private readonly onPart: (part: CapturedPart) => Promise<void>,
-    opts: { blocksPerPart?: number; onError?: (error: unknown) => void } = {},
+    opts: { blocksPerPart?: number; onError?: (error: unknown) => void; now?: () => number } = {},
   ) {
     this.blocksPerPart = opts.blocksPerPart ?? RecordingCapture.DEFAULT_BLOCKS_PER_PART;
     this.onError = opts.onError ?? (() => undefined);
+    this.now = opts.now ?? Date.now;
   }
 
   private readonly onError: (error: unknown) => void;
@@ -74,8 +83,13 @@ export class RecordingCapture {
     return this.active ? { sessionId: this.active.sessionId, seq: this.active.next } : null;
   }
 
-  private send(command: string): void {
-    this.link.send(command).catch(() => undefined); // a lost command is repeated by the next gap or reconnect
+  private send(command: string, retries = 0): void {
+    this.link.send(command).catch(() => {
+      // A write can fail while the radio is busy ("operation already in progress"). A confirmation is cumulative, so
+      // trying it again a moment later is always safe; a RESEND is never repeated late (it could rewind the locket
+      // after it moved on), the next gap or reconnect asks again.
+      if (retries > 0) setTimeout(() => this.send(command, retries - 1), RETRY_ACK_MS);
+    });
   }
 
   private askFrom(active: Active): void {
@@ -100,6 +114,7 @@ export class RecordingCapture {
         part: 0,
         askedFrom: null,
         sinceAck: 0,
+        lastAckAt: 0,
         saving: Promise.resolve(),
         failed: false,
       };
@@ -118,7 +133,13 @@ export class RecordingCapture {
   }
 
   private audio(active: Active, sequence: number, payload: Uint8Array): void {
-    if (sequence < active.next) return; // a repeat of something we have
+    if (sequence < active.next) {
+      // A repeat of something we have. The locket only repeats frames when it did not get our confirmation (a lost
+      // write, a busy radio), so say again how far we are. Without this, one lost confirmation made it resend the
+      // same frames for ever: every one of them is "something we have", and a confirmation is only sent for new ones.
+      this.repeatAck(active);
+      return;
+    }
     if (sequence > active.next || payload.length !== BLOCK_BYTES) {
       this.askFrom(active);
       return;
@@ -129,9 +150,17 @@ export class RecordingCapture {
     active.sinceAck += 1;
     if (active.sinceAck >= ACK_EVERY) {
       active.sinceAck = 0;
-      this.send(ack(active.sessionId, active.next - 1));
+      active.lastAckAt = this.now();
+      this.send(ack(active.sessionId, active.next - 1), 2);
     }
     if (active.blocks.length >= this.blocksPerPart) this.emit(active, false);
+  }
+
+  private repeatAck(active: Active): void {
+    const now = this.now();
+    if (active.next <= 1 || now - active.lastAckAt < REACK_EVERY_MS) return;
+    active.lastAckAt = now;
+    this.send(ack(active.sessionId, active.next - 1), 2);
   }
 
   private end(active: Active, sequence: number): void {
@@ -143,7 +172,7 @@ export class RecordingCapture {
     this.active = null;
     active.saving
       .then(() => {
-        if (!active.failed) this.send(ack(active.sessionId, sequence));
+        if (!active.failed) this.send(ack(active.sessionId, sequence), 2);
       })
       .catch(() => undefined);
   }

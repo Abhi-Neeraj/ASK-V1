@@ -192,16 +192,25 @@ def _summaries(
     return snippets, speakers, placeholders
 
 
-def _part_counts(db: Session, recordings: list[Recording]) -> dict[tuple[uuid.UUID, str], int]:
-    """How many clips of each recording on this page have arrived, keyed by (locket, session reference). A
-    session reference is only meaningful for the locket that chose it, so two lockets never share a count."""
+def _part_counts(
+    db: Session, recordings: list[Recording]
+) -> dict[tuple[uuid.UUID, str], tuple[int, int, datetime]]:
+    """For each meeting on this page, keyed by (locket, session reference): how many parts have arrived, their
+    total length in milliseconds and when the first began. A session reference is only meaningful for the
+    locket that chose it, so two lockets never share a count."""
     keys: set[tuple[uuid.UUID, str]] = {
         (r.device_id, r.session_ref) for r in recordings if r.session_ref is not None and r.session_ref != ""
     }
     if not keys:
         return {}
     rows = db.execute(
-        select(Recording.device_id, Recording.session_ref, func.count())
+        select(
+            Recording.device_id,
+            Recording.session_ref,
+            func.count(),
+            func.sum(Recording.duration_ms),
+            func.min(Recording.started_at),
+        )
         .where(
             Recording.device_id.in_({device for device, _ in keys}),
             Recording.session_ref.in_({ref for _, ref in keys}),
@@ -209,14 +218,30 @@ def _part_counts(db: Session, recordings: list[Recording]) -> dict[tuple[uuid.UU
         )
         .group_by(Recording.device_id, Recording.session_ref)
     )
-    return {(device, ref): count for device, ref, count in rows if ref is not None and (device, ref) in keys}
+    return {
+        (device, ref): (count, int(total or 0), first)
+        for device, ref, count, total, first in rows
+        if ref is not None and (device, ref) in keys
+    }
 
 
-def _part_label(recording: Recording, counts: dict[tuple[uuid.UUID, str], int]) -> int | None:
+def _meeting(
+    recording: Recording, counts: dict[tuple[uuid.UUID, str], tuple[int, int, datetime]]
+) -> tuple[int, int, datetime] | None:
+    """(parts, total milliseconds, first start) when the recording is one of several parts of a meeting."""
+    if not recording.session_ref:
+        return None
+    found = counts.get((recording.device_id, recording.session_ref))
+    return found if found is not None and found[0] > 1 else None
+
+
+def _part_label(
+    recording: Recording, counts: dict[tuple[uuid.UUID, str], tuple[int, int, datetime]]
+) -> int | None:
     """The part number, shown only when it means something: a lone first part is just a recording."""
     if not recording.session_ref or recording.sequence is None:
         return None
-    if recording.sequence > 1 or counts.get((recording.device_id, recording.session_ref), 1) > 1:
+    if recording.sequence > 1 or _meeting(recording, counts) is not None:
         return recording.sequence
     return None
 
@@ -247,6 +272,10 @@ def recording_outs(db: Session, recordings: list[Recording]) -> list[RecordingOu
             format=r.format,
             uploaded_at=r.uploaded_at,
             part=_part_label(r, parts),
+            session_ref=r.session_ref or None,
+            part_count=meeting[0] if (meeting := _meeting(r, parts)) else None,
+            meeting_duration_ms=meeting[1] if meeting else None,
+            meeting_started_at=meeting[2] if meeting else None,
             state=r.state,
             retry_count=r.retry_count,
             error=r.error if r.state == "failed" else None,

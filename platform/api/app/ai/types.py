@@ -54,6 +54,11 @@ class Diarization:
     turns: tuple[Turn, ...]
     model: str
     model_version: str
+    # False when the labels of different stretches of the recording are not tied to each other (Google labels
+    # speakers within each 55-second request only, so "SPEAKER_1" in minute one need not be "SPEAKER_1" in
+    # minute two). Such a label is not one voice, so it is never matched to a named person and the
+    # summarizer is not told the speaker numbers.
+    labels_linked: bool = True
 
 
 @dataclass(frozen=True)

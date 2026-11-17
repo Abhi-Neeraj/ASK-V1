@@ -28,7 +28,7 @@ function failure(error: unknown, fallback: PairFailure): PairOutcome {
     reason: fallback,
     message:
       fallback === "wrong_code"
-        ? "The code did not match. Ask for a new code and try again."
+        ? "The Bluetooth pairing did not go through. If you typed a code, it did not match: ask for a new one. If this phone has paired with this locket before, open your phone's Bluetooth settings, forget the ASK-... device, and try again."
         : "Pairing did not finish. Keep the locket next to your phone and try again.",
   };
 }
@@ -56,6 +56,17 @@ export async function pairLocket({
     await link.bond();
     stage = "proof_rejected";
     const proof = await link.readProof();
+    if (!/^[0-9a-f]{64}$/i.test(proof)) {
+      // The locket gave no proof (a phone it already knows, or a pairing that did not really finish). Sending the
+      // server an empty proof only gets "Some fields are not valid" and uses up one of the hour's code requests.
+      await link.disconnect().catch(() => undefined);
+      return {
+        ok: false,
+        reason: "proof_rejected",
+        message:
+          "The locket did not confirm the pairing. Open your phone's Bluetooth settings, forget the ASK-... device, turn the locket off and on, then pair again.",
+      };
+    }
     await api.confirmPaired(productId, nonce, proof);
     return { ok: true };
   } catch (error) {

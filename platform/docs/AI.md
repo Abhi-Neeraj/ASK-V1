@@ -107,11 +107,51 @@ phone downloads `transcription.txt` and `summary.txt` as its local backup.
   API enabled, used when there is no file; added 2026-11-15 at the owner's request), `ASK_GEMINI_API_KEY`, optional `ASK_GOOGLE_STT_LANGUAGE` (`en-US`) and
   `ASK_GEMINI_MODEL` (`gemini-2.5-flash`; check Google's current model list). Production refuses `google`
   without both keys. Without a Gemini key, transcripts are made and saved without a summary.
-- Long recordings are sent in pieces of up to 55 seconds (the synchronous API takes one minute at most).
-  Google's speaker labels are per piece: "Speaker 1" in one minute need not be "Speaker 1" in the next.
+- Speed (measured on the real service, 2026-11-17, with synthetic speech): eight minutes of audio took 127 s sent as
+  nine 55-second pieces one after another, 63 s sent together, 88 s one after another without speaker labels and 25 s
+  together without them (from a home connection; less from a data centre). So audio up to 55 seconds is one request
+  with speaker labels; longer audio is cut at pauses into pieces of about 20 seconds (`PIECE_SECONDS`) sent at the same
+  time (up to 24 at once) without speaker labels. The summary is written without Gemini "thinking"
+  (`ASK_GEMINI_THINKING_BUDGET=0`; about 2 s instead of 6 s for a meeting; -1 restores the model's default) over the
+  `v1beta` API, which allows that setting. The rule-built analysis and the summary run at the same time, and the worker
+  looks for a new job every `ASK_WORKER_POLL_SECONDS` (0.5 s on Railway). Google's speaker labels are per piece,
+  and for that reason there are none for recordings longer than 55 seconds: "Speaker 1" in one minute need not be
+  "Speaker 1" in the next. Since
+  2026-11-17 a recording that went in more than one piece is marked `labels_linked = False` (`Diarization`): its
+  labels are never matched to a named person (no voice-model or voice-signature matching, no "identifying" stage),
+  and the summarizer is given lines without speaker numbers. A recording of 55 seconds or less is one request, so
+  its labels are consistent and matching works as before. The labels are still shown as "Speaker N" in the
+  transcript and the rule-built analysis, so for long Google recordings they can mix people: say so.
+- **Meetings in parts (live upload, 2026-11-17).** The locket closes a part of the meeting every minute for the first
+  30 minutes (five minutes after that; `kLiveParts` in `locket_ble/config.h`), the phone cuts and uploads a part about
+  every minute while the rest is still arriving (`RecordingCapture`), and the server transcribes each part as it
+  lands, so when the meeting ends only the last minute is left. Each part is its own recording; the locket's session
+  reference ties them together (`app/services/meeting.py`). The summary of a part is written from the whole meeting
+  so far (a Gemini call per part, no speaker numbers), and `transcription.txt` / `summary.txt` of any part are for
+  the whole meeting: every processed part in order with times from the start, and the newest summary. A recording
+  that is the only part of its meeting is unchanged. Unverified: the locket and phone sides have never run together
+  on a board; the server side is tested with stand-in clients (`tests/test_meeting_parts.py`).
+- **Recordings of 1 to 5 hours (2026-11-17).** The locket records up to 6 hours (`kMaxSessionSeconds`; it used to
+  stop at 1 h 56 min), needs a memory card with about 115 MB free per hour (690 MB for 6 hours), and tracks up to
+  120 parts of a meeting. The website keeps the screen on while a locket is connected (a screen that turns off stops
+  Bluetooth) and shows a meeting of many one-minute parts as ONE row with the right total length and part count (the
+  server sends `partCount`, `meetingDurationMs`, `meetingStartedAt`); opening it shows the whole-meeting transcript
+  and summary. A summary of the whole meeting is written after each part (a Gemini call each, which for a 5-hour
+  meeting adds up to a few dollars; `ASK_GEMINI_MAX_INPUT_CHARS` now defaults to 1,000,000 characters, about 18
+  hours of speech). **Server disk:** audio is 115 MB an hour, so a 500 MB Railway volume holds about 4 hours in
+  total, less than one 5-hour meeting. `ASK_DELETE_AUDIO_AFTER_PROCESSING=true` removes each part's audio once its
+  transcript is saved (the phone keeps its own copy; transcripts and summaries are kilobytes), at the cost of audio
+  playback and "process again" on the server. It is off by default in the code and was switched ON for the Railway
+  server on 2026-11-17 at the owner's request (the alternative is a larger volume). The server logs "removed the audio
+  of recording ..." each time. Never run on a real 5-hour recording.
 - The summary prompt asks for Summary, Decisions, Action items and Open questions using only what the transcript says
-  (`app/ai/google.py`, `SUMMARY_PROMPT`). It is generative AI: unlike the rule-built analysis below, it can
-  be wrong in ways the transcript does not show. A failed summary never fails the recording.
+  (`app/ai/google.py`, `SUMMARY_PROMPT`, sent in one message ahead of the transcript: a separate system instruction is refused by the stable API version, as the live service showed on 2026-11-17). It is generative AI: unlike the
+  rule-built analysis below, it can be wrong in ways the transcript does not show. A failed summary never fails the
+  recording. The transcript is untrusted (it is whatever people said near the microphone): it is sent between
+  `<transcript>` markers with any marker-like text removed, and the instruction says to treat it as speech, never as
+  commands. That lowers the chance of a spoken "ignore your instructions" working; it cannot rule it out. At most
+  `ASK_GEMINI_MAX_INPUT_CHARS` (default 1,000,000, about 18 hours of speech) characters are sent: a longer transcript is cut at a line end and
+  the summary ends with a note that it covers only the first part. The reply is not length-limited.
 - **Verified only with stand-in clients** (`tests/test_google_provider.py`, `tests/test_pipeline_summary.py`).
   No request has been sent to Google or Gemini from this machine; there are no keys here.
 

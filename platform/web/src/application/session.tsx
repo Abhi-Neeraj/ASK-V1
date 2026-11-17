@@ -7,6 +7,7 @@ import { ApiError, createClient } from "@/infrastructure/api/client";
 import { type Api, endpoints } from "@/infrastructure/api/endpoints";
 import { defaultTokenStore } from "@/infrastructure/api/tokenStore";
 import { userCache } from "@/infrastructure/api/userCache";
+import { clearCache } from "@/application/cache";
 import { afterMeFailed } from "@/application/sessionStart";
 import type { UserOut } from "@/infrastructure/api/types";
 
@@ -37,6 +38,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       onUnauthenticated: () => {
         setUser(null);
         setStatus("signedOut");
+        clearCache();
         void userCache.save(null);
       },
     });
@@ -62,7 +64,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     defaultTokenStore
       .load()
-      .then(refresh)
+      .then(async () => {
+        // Open the app at once as the person who was signed in last (kept for this tab, or on the phone), then let the
+        // server confirm in the background: waiting for "who am I?" first left a blank spinner on every reload. If
+        // the server says the session is over, the 401 signs them out and they land on Sign in.
+        const remembered = await userCache.load();
+        if (remembered) {
+          setUser(remembered);
+          setStatus("signedIn");
+        }
+        await refresh();
+      })
       .catch(() => setStatus("signedOut"));
   }, [refresh]);
 
@@ -85,6 +97,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         } finally {
           setUser(null);
           setStatus("signedOut");
+          clearCache();
           await userCache.save(null);
         }
       },

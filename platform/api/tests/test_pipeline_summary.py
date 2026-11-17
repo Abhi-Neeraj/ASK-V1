@@ -59,6 +59,28 @@ def test_summary_is_saved_with_the_transcript(app, db: Session, acme) -> None:  
     )
 
 
+def test_unlinked_speaker_labels_are_not_shown_to_the_summarizer(
+    app,
+    db: Session,
+    acme,  # type: ignore[no-untyped-def]
+) -> None:
+    """When the labels are not one voice each, numbering them would credit words to the wrong speaker."""
+    recording_id, _ = upload(app)
+    summarizer = FakeSummarizer()
+    unlinked = Provider(
+        name="test",
+        placeholder=False,
+        transcriber=FakeTranscriber(),
+        diarizer=FakeDiarizer(two_speaker_turns(), labels_linked=False),
+        summarizer=summarizer,
+    )
+    assert worker_for(app, unlinked).run(once=True) == 1
+    [sent] = summarizer.calls
+    assert sent == "[00:00:00] Good morning everyone.\n[00:00:04] Morning, shall we begin?\n"
+    assert "Speaker" not in sent
+    assert transcript_of(db, recording_id).summary_text == "Summary\nThey agreed to begin."
+
+
 def test_a_failed_summary_keeps_the_transcript(app, db: Session, acme) -> None:  # type: ignore[no-untyped-def]
     recording_id, _ = upload(app)
     assert worker_for(app, provider(FakeSummarizer(RuntimeError("quota")))).run(once=True) == 1

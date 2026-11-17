@@ -2,14 +2,15 @@ import React from "react";
 import { Text } from "react-native";
 import { useFocusEffect } from "expo-router";
 import { useSession } from "@/application/session";
+import { useCachedState } from "@/application/useCachedState";
 import { RecordingRow } from "@/components/RecordingRow";
 import { Button, Loading, Notice, Page, uiText } from "@/components/ui";
 import type { RecordingOut } from "@/infrastructure/api/types";
 
 export default function Recordings() {
   const { api } = useSession();
-  const [items, setItems] = React.useState<RecordingOut[] | null>(null);
-  const [total, setTotal] = React.useState(0);
+  const [items, setItems] = useCachedState<RecordingOut[] | null>("activity:items", null);
+  const [total, setTotal] = useCachedState("activity:total", 0);
   const [page, setPage] = React.useState(1);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -29,7 +30,7 @@ export default function Recordings() {
         setBusy(false);
       }
     },
-    [api],
+    [api, setItems, setTotal],
   );
 
   useFocusEffect(

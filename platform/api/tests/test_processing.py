@@ -472,6 +472,7 @@ class TestThePipeline:
             "placeholder": False,
             "segments": 2,
             "diarized": True,
+            "speakerLabelsLinked": True,
             "speakersNamed": 0,
         }
         assert "morning" not in str(event.detail).lower()

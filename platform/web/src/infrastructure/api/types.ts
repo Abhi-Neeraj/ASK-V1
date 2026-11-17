@@ -39,6 +39,12 @@ export type RecordingOut = {
   format: string;
   uploadedAt: string;
   part: number | null;
+  /** The locket's reference for the whole meeting this is a part of (the same for every part); null for a single clip. */
+  sessionRef: string | null;
+  /** For a part of a meeting: how many parts have arrived, their total length and when the first began. */
+  partCount: number | null;
+  meetingDurationMs: number | null;
+  meetingStartedAt: string | null;
   state: RecordingState;
   retryCount: number;
   error: string | null;

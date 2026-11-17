@@ -28,6 +28,7 @@ export function formatDate(iso: string): string {
 export function formatDuration(ms: number): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(seconds / 60);
+  if (minutes >= 60) return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
   return minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
 }
 

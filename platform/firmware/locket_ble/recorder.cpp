@@ -180,6 +180,7 @@ static void runSession() {
   uint8_t* blockData = nullptr;  // the ring block being filled, or null between blocks
   size_t fill = 0;
   uint32_t blocksInPart = 0;
+  uint32_t partsClosed = 0;
   uint64_t captured = 0;
   uint32_t lastData = millis();
   uint32_t lastSecond = 0;
@@ -232,9 +233,15 @@ static void runSession() {
       offset += take;
       if (fill == kRingBlockBytes) {
         blocksInPart++;
-        const bool endsPart = blocksInPart >= session.partBlocks;
+        // Short parts at first, so audio reaches the phone while people are still talking; longer ones later.
+        const uint32_t partLimit =
+            partsClosed < kLiveParts ? session.partBlocks : session.partBlocks * kLongPartFactor;
+        const bool endsPart = blocksInPart >= partLimit;
         sdwriter::submit(block, fill, endsPart);
-        if (endsPart) blocksInPart = 0;
+        if (endsPart) {
+          blocksInPart = 0;
+          partsClosed++;
+        }
         blockData = nullptr;
         fill = 0;
       }

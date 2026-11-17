@@ -128,6 +128,27 @@ class TestNamingSpeakersByVoiceSignature:
         assert [s.person_id for s in lines] == [lena.id, hana.id, lena.id, hana.id]
         assert all(s.confidence is not None and 0.5 <= s.confidence <= 1.0 for s in lines)
 
+    def test_labels_that_are_not_one_voice_each_are_never_named(self, app, db: Session, acme) -> None:  # type: ignore[no-untyped-def]
+        """Google labels speakers within each 55-second piece only. When the labels are not linked, a label
+        may hold several people's speech, so matching it to an enrolled voice could name the wrong person: the
+        speakers stay "Speaker N" even though the same enrolled voices named everyone in the test above."""
+        body, spans = talk()
+        recording_id, web = upload_audio(app, body)
+        enroll_signature(web, add_person(db, acme["company"], "Lena Low"), LOW_MALE)
+        enroll_signature(web, add_person(db, acme["company"], "Hana High"), HIGH_FEMALE)
+        provider = make_provider(
+            transcriber=transcriber_for(spans),
+            diarizer=FakeDiarizer(fake_turns(spans), labels_linked=False),
+        )
+
+        assert worker_for(app, provider).run(once=True) == 1
+
+        assert "identifying_speakers" not in states_of(db, recording_id)
+        assert all(s.person_id is None and s.confidence is None for s in segments_of(db, recording_id))
+        event = db.scalar(select(AuditEvent).where(AuditEvent.action == "recording.processed"))
+        assert event is not None
+        assert event.detail["speakerLabelsLinked"] is False and event.detail["speakersNamed"] == 0
+
     def test_a_voice_matching_nobody_stays_unknown(self, app, db: Session, acme) -> None:  # type: ignore[no-untyped-def]
         stranger = Voice(f0=170.0, formants=(430.0, 2300.0, 3400.0), bandwidth=(160.0, 220.0, 300.0))
         body, spans = talk([stranger, stranger, stranger, stranger])

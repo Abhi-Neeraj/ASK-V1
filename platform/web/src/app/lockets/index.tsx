@@ -4,6 +4,7 @@ import { router, useFocusEffect } from "expo-router";
 import { pairLocket } from "@/application/pairLocket";
 import { useLocketController } from "@/application/locketController";
 import { useSession } from "@/application/session";
+import { useCachedState } from "@/application/useCachedState";
 import { ScreenSection } from "@/components/primitives";
 import { Button, Card, Field, Loading, Notice, Page, uiText } from "@/components/ui";
 import type { FoundLocket } from "@/domain/locket/link";
@@ -12,7 +13,7 @@ import type { LocketOut, LocketRegistered } from "@/infrastructure/api/types";
 export default function Lockets() {
   const { api, user } = useSession();
   const controller = useLocketController();
-  const [lockets, setLockets] = React.useState<LocketOut[] | null>(null);
+  const [lockets, setLockets] = useCachedState<LocketOut[] | null>("lockets", null);
   const [error, setError] = React.useState<string | null>(null);
   const [note, setNote] = React.useState<string | null>(null);
   const [found, setFound] = React.useState<FoundLocket[]>([]);
@@ -29,7 +30,7 @@ export default function Lockets() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load lockets.");
     }
-  }, [api]);
+  }, [api, setLockets]);
 
   useFocusEffect(
     React.useCallback(() => {

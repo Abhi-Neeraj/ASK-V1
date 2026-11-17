@@ -24,6 +24,7 @@ import threading
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
@@ -46,7 +47,7 @@ from app.models import (
     TranscriptSegment,
     VoiceProfile,
 )
-from app.services import insights, jobs, signatures
+from app.services import insights, jobs, meeting, signatures
 from app.services.alignment import AlignedSegment, align
 from app.services.audio import inspect_wav
 from app.services.audit import publish_event, record_audit, recording_event
@@ -131,13 +132,17 @@ class Pipeline:
                     diarization = self._stage(job, "diarizing", lambda: diarizer.diarize(path))
                     self._check(lost)
                 turns = list(diarization.turns) if diarization else []
+                # A label that is not one voice (Google's, across several 55-second pieces) is never matched
+                # to a named person: a wrong name is worse than "Speaker N".
+                labels_linked = diarization.labels_linked if diarization else True
+                nameable = bool(turns) and labels_linked
 
                 identities: dict[str, Identity] = {}
                 voices: dict[str, SpeakerVoice] = {}
-                candidates = self._candidates(work) if self.provider.embedder and turns else []
+                candidates = self._candidates(work) if self.provider.embedder and nameable else []
                 # Voice signatures (pitch plus voice colour) are compared too, for speakers the speaker model
                 # did not name. Like the speaker model, only when a separator said who spoke when.
-                signature_candidates = self._signature_candidates(work) if turns else []
+                signature_candidates = self._signature_candidates(work) if nameable else []
                 if (self.provider.embedder is not None and candidates) or signature_candidates:
                     identities = self._stage(
                         job,
@@ -150,12 +155,17 @@ class Pipeline:
                 self._check(lost)
                 # What was said, worked out by fixed rules, and each speaker's pitch. Part of finishing the
                 # transcript; if it cannot be made the transcript is still saved without it.
-                analysis = self._analyse(path, work, turns, aligned, identities, voices)
-                self._check(lost)
-                # A written summary by the provider's summarizer (Gemini for `google`). Never fails the job.
-                summary = self._summarize(work, aligned)
+                # A written summary by the provider's summarizer (Gemini for `google`) never fails the job. It
+                # is a call to another service and the analysis is arithmetic on the audio: neither needs the
+                # other, so they run at the same time and the recording is ready when the slower one is.
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    summary_job = pool.submit(self._summarize, work, aligned, speakers=labels_linked)
+                    analysis = self._analyse(path, work, turns, aligned, identities, voices)
+                    summary = summary_job.result()
                 self._check(lost)
             self._save(job, work, transcription, diarization, aligned, identities, analysis, summary)
+            if self.settings.delete_audio_after_processing:
+                self._drop_audio(work)
             return "done"
         except RecordingGoneError:
             with self.factory() as db:
@@ -175,6 +185,15 @@ class Pipeline:
                 "processing job %s failed (attempt %s of %s)", job.id, job.attempts, job.max_attempts
             )
             return self._failed(job, f"{type(error).__name__}: {error}", permanent=False)
+
+    def _drop_audio(self, work: _Work) -> None:
+        """The transcript is saved; remove the audio file (ASK_DELETE_AUDIO_AFTER_PROCESSING). Never fails the
+        job: a file left behind is removed with the recording later."""
+        try:
+            self.storage.delete(work.storage_key)
+            logger.info("removed the audio of recording %s after processing it", work.recording_id)
+        except OSError:
+            logger.warning("could not remove the audio of recording %s", work.recording_id)
 
     def _failed(self, job: ClaimedJob, message: str, *, permanent: bool) -> Outcome:
         with self.factory() as db:
@@ -380,14 +399,27 @@ class Pipeline:
             )
             return None
 
-    def _summarize(self, work: _Work, aligned: Sequence[AlignedSegment]) -> tuple[str, str] | None:
+    def _meeting_input(self, work: _Work, aligned: Sequence[AlignedSegment]) -> str | None:
+        """For one of several parts of a meeting, the whole meeting so far (see app.services.meeting), so the
+        summary written when the last part arrives covers all of it. None for a recording on its own."""
+        with self.factory() as db:
+            recording = db.get(Recording, work.recording_id)
+            if recording is None:
+                return None
+            return meeting.summary_input(db, recording, [(s.start_ms, s.text) for s in aligned])
+
+    def _summarize(
+        self, work: _Work, aligned: Sequence[AlignedSegment], *, speakers: bool = True
+    ) -> tuple[str, str] | None:
         """(summary, model), or None when there is no summarizer, nothing was said, the transcript is a
-        placeholder, or the summarizer failed: the transcript is saved either way."""
+        placeholder, or the summarizer failed: the transcript is saved either way. With `speakers` False the
+        speaker numbers are left out of what the summarizer reads (they are not one voice each)."""
         summarizer = self.provider.summarizer
         if summarizer is None or self.provider.placeholder or not aligned:
             return None
         try:
-            return summarizer.summarize(summary_input(aligned)), summarizer.model
+            text = self._meeting_input(work, aligned) or summary_input(aligned, speakers=speakers)
+            return summarizer.summarize(text), summarizer.model
         except Exception:
             logger.exception(
                 "could not summarise recording %s; saving its transcript without one", work.recording_id
@@ -510,6 +542,7 @@ class Pipeline:
                     "placeholder": placeholder,
                     "segments": len(aligned),
                     "diarized": diarization is not None,
+                    "speakerLabelsLinked": diarization.labels_linked if diarization else None,
                     "speakersNamed": len({i.person_id for i in identities.values()}),
                 },
             )
@@ -522,16 +555,21 @@ class Pipeline:
             db.commit()
 
 
-def summary_input(aligned: Sequence[AlignedSegment]) -> str:
+def summary_input(aligned: Sequence[AlignedSegment], *, speakers: bool = True) -> str:
     """The transcript as the summarizer reads it: `[HH:MM:SS] Speaker N: text`, one line per segment, voices
-    numbered by first appearance (the same layout as transcription.txt)."""
+    numbered by first appearance (the same layout as transcription.txt). With `speakers` False the lines are
+    `[HH:MM:SS] text`: used when the speaker labels are not one voice each, so numbering them would make the
+    summarizer attribute words to people who did not say them."""
     numbers: dict[str, int] = {}
     lines = []
     for segment in aligned:
-        number = numbers.setdefault(segment.speaker, len(numbers) + 1)
         seconds = max(segment.start_ms, 0) // 1000
         clock = f"{seconds // 3600:02d}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}"
-        lines.append(f"[{clock}] Speaker {number}: {segment.text.strip()}\n")
+        if speakers:
+            number = numbers.setdefault(segment.speaker, len(numbers) + 1)
+            lines.append(f"[{clock}] Speaker {number}: {segment.text.strip()}\n")
+        else:
+            lines.append(f"[{clock}] {segment.text.strip()}\n")
     return "".join(lines)
 
 

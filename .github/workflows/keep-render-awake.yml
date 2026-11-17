@@ -3,6 +3,9 @@
 # keeps it awake, and keeps the processing worker (same container) running. One free service awake all month uses
 # about 720 of the 750 free instance hours. GitHub may delay scheduled runs by a few minutes.
 
+# NOTE: in a PRIVATE repository GitHub gives 2000 free minutes a month and this uses about 4400, so use a free pinger
+# (cron-job.org, UptimeRobot) pointed at the same address instead. It stays here for a public copy of the project.
+
 name: Keep Render awake
 
 on:

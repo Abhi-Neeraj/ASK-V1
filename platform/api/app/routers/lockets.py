@@ -111,6 +111,16 @@ def remove_member(product_id: str, user_id: uuid.UUID, ctx: Authed, db: DbDep) -
     return Response(status_code=204)
 
 
+@router.delete("/{product_id}", status_code=204)
+def delete_locket(product_id: str, ctx: Admin, db: DbDep) -> Response:
+    """Administrators delete a locket: it disappears from every list and can no longer pair or upload. Its
+    recordings are kept."""
+    device = svc.find_locket(db, ctx, product_id, lock=True)
+    svc.delete_locket(db, ctx, device)
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.patch("/{product_id}/limit", response_model=LocketOut)
 def change_limit(product_id: str, body: LimitIn, ctx: Admin, db: DbDep) -> LocketOut:
     device = svc.find_locket(db, ctx, product_id, lock=True)

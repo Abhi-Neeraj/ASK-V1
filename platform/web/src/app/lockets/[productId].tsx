@@ -5,6 +5,7 @@ import { firmwareOffer, startFirmwareUpdate } from "@/application/firmwareUpdate
 import { formatDate } from "@/application/labels";
 import { useLocketController } from "@/application/locketController";
 import { canManage, useSession } from "@/application/session";
+import { useCachedState } from "@/application/useCachedState";
 import { ScreenSection } from "@/components/primitives";
 import { Button, Card, Field, Loading, Notice, Page, uiText } from "@/components/ui";
 import type { FirmwareLatest, LocketOut } from "@/infrastructure/api/types";
@@ -13,7 +14,7 @@ export default function LocketDetail() {
   const { productId } = useLocalSearchParams<{ productId: string }>();
   const { api, user } = useSession();
   const controller = useLocketController();
-  const [locket, setLocket] = React.useState<LocketOut | null>(null);
+  const [locket, setLocket] = useCachedState<LocketOut | null>(`locket:${productId}`, null);
   const [offer, setOffer] = React.useState<FirmwareLatest | null>(null);
   const [limit, setLimit] = React.useState(1);
   const [ssid, setSsid] = React.useState("");
@@ -36,7 +37,7 @@ export default function LocketDetail() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not load this locket.");
     }
-  }, [api, productId, controller.connected, controller.productId, controller.firmwareVersion]);
+  }, [api, productId, setLocket, controller.connected, controller.productId, controller.firmwareVersion]);
 
   React.useEffect(() => {
     void load();

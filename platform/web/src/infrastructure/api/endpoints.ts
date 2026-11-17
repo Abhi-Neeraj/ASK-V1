@@ -56,6 +56,8 @@ export function endpoints(client: ApiClient, tokens: TokenStore) {
     },
     getRecording: (id: string) => client.request<RecordingDetailOut>("GET", `/api/recordings/${enc(id)}`),
     deleteRecording: (id: string) => client.request<void>("DELETE", `/api/recordings/${enc(id)}`),
+    /** Deletes every part of the meeting this recording belongs to (a long meeting is many one-minute parts). */
+    deleteMeeting: (id: string) => client.request<void>("DELETE", `/api/recordings/${enc(id)}?meeting=true`),
     reprocess: (id: string) => client.request<RecordingOut>("POST", `/api/recordings/${enc(id)}/reprocess`),
     audioUrl: (id: string) => `${client.base}/api/recordings/${enc(id)}/audio`,
     audioBytes: (id: string) => client.bytes(`/api/recordings/${enc(id)}/audio`),
@@ -71,6 +73,8 @@ export function endpoints(client: ApiClient, tokens: TokenStore) {
       client.request<CodeSent>("POST", `/api/lockets/${enc(productId)}/pairing-code`, { json: { nonce } }),
     confirmPaired: (productId: string, nonce: string, proof: string) =>
       client.request<void>("POST", `/api/lockets/${enc(productId)}/paired`, { json: { nonce, proof } }),
+    /** Administrators only: the locket is revoked for good and disappears from every list. Its recordings stay. */
+    deleteLocket: (productId: string) => client.request<void>("DELETE", `/api/lockets/${enc(productId)}`),
     removeMember: (productId: string, userId: string) =>
       client.request<void>("DELETE", `/api/lockets/${enc(productId)}/members/${enc(userId)}`),
     setLimit: (productId: string, maxUsers: number) =>

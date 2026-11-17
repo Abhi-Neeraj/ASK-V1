@@ -4,7 +4,8 @@
 //    number as X-Sequence; its upload ID is "<session>-<part>", so uploading twice never makes two recordings.
 //    An uploaded part moves to ASK/<recordingId>/audio.wav. Offline, signed out or a busy server: it waits.
 //    A file the server refuses for good (too long, not audio...) moves to ASK/rejected so it cannot block the
-//    parts behind it.
+//    parts behind it. A 404 (this account is not paired with that locket) is not a refusal of the audio: the part
+//    stays waiting, and parts an older version set aside for that reason are put back on the waiting list.
 // 3. saveTextFiles: transcription.txt and summary.txt once the server has them.
 
 import type { CapturedPart } from "@/application/captureRecording";
@@ -47,6 +48,22 @@ export async function savePart({
   await files.write(`${PENDING}/${key}.json`, JSON.stringify(meta));
 }
 
+/**
+ * Throw away every recording waiting on this phone, and every one set aside: for a clip that can never upload (made
+ * when the locket had another ID, or one this account is not paired with), so it stops being offered. Returns how
+ * many recordings were removed.
+ */
+export async function discardPending(files: LocalFiles): Promise<number> {
+  let removed = 0;
+  for (const directory of [PENDING, REJECTED]) {
+    for (const name of await files.list(directory)) {
+      await files.remove(`${directory}/${name}`);
+      if (name.endsWith(".wav")) removed += 1;
+    }
+  }
+  return removed;
+}
+
 export async function pendingCount(files: LocalFiles): Promise<number> {
   return (await files.list(PENDING)).filter((name) => name.endsWith(".wav")).length;
 }
@@ -57,16 +74,45 @@ function retryLater(error: unknown): boolean {
   return error.status === 0 || error.status === 401 || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
+/**
+ * A 404 on an upload means this account is not on that locket (it was never paired here, or it was removed). The
+ * audio itself is fine, so it stays waiting on the phone until the account is on the locket: it is never set aside.
+ */
+function notOnLocket(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
+/**
+ * Parts an older version set aside because of a 404 (the account was not paired with the locket yet) go back to the
+ * waiting list, so a recording made before pairing is not lost. Parts refused for any other reason stay set aside.
+ */
+async function requeueUnpaired(files: LocalFiles): Promise<void> {
+  for (const name of (await files.list(REJECTED)).filter((n) => n.endsWith(".json"))) {
+    const key = name.slice(0, -5);
+    const metaBytes = await files.read(`${REJECTED}/${key}.json`);
+    const wav = await files.read(`${REJECTED}/${key}.wav`);
+    if (!metaBytes || !wav) continue;
+    const { reason, ...meta } = JSON.parse(new TextDecoder().decode(metaBytes)) as PendingMeta & { reason?: string };
+    if (reason !== "not_found") continue;
+    await files.write(`${PENDING}/${key}.wav`, wav);
+    await files.write(`${PENDING}/${key}.json`, JSON.stringify(meta));
+    await files.remove(`${REJECTED}/${key}.wav`);
+    await files.remove(`${REJECTED}/${key}.json`);
+  }
+}
+
 export async function retryPending({
   api,
   files,
 }: {
   api: UploadApi;
   files: LocalFiles;
-}): Promise<{ uploaded: string[]; rejected: string[]; reasons: string[] }> {
+}): Promise<{ uploaded: string[]; rejected: string[]; reasons: string[]; waiting: string[] }> {
   const uploaded: string[] = [];
   const rejected: string[] = [];
   const reasons: string[] = [];
+  const waiting: string[] = []; // product IDs this account is not on: their recordings stay on the phone
+  await requeueUnpaired(files);
   const names = (await files.list(PENDING)).filter((name) => name.endsWith(".wav")).sort();
   for (const name of names) {
     const key = name.slice(0, -4);
@@ -84,6 +130,11 @@ export async function retryPending({
       await files.remove(`${PENDING}/${key}.json`);
       uploaded.push(ack.recordingId);
     } catch (error) {
+      if (notOnLocket(error)) {
+        // Not paired with this locket: keep the part and go on, other lockets' parts may still upload.
+        if (!waiting.includes(meta.productId)) waiting.push(meta.productId);
+        continue;
+      }
       if (retryLater(error)) break; // offline, signed out or busy: the rest waits too
       await files.write(`${REJECTED}/${key}.wav`, wav);
       await files.write(`${REJECTED}/${key}.json`, JSON.stringify({ ...meta, reason: (error as ApiError).code }));
@@ -95,7 +146,7 @@ export async function retryPending({
       reasons.push(`${refusal.code}: ${refusal.message}`);
     }
   }
-  return { uploaded, rejected, reasons };
+  return { uploaded, rejected, reasons, waiting };
 }
 
 type TextApi = { textFile(id: string, which: "transcription" | "summary"): Promise<string> };

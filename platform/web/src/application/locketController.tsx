@@ -4,6 +4,7 @@
 import React from "react";
 import { LocketSession, type SessionState } from "@/application/locketSession";
 import { useSession } from "@/application/session";
+import { useKeepAwake } from "@/application/useKeepAwake";
 import { forget, recStart, recStop } from "@/domain/locket/commands";
 import type { FoundLocket, LocketLink } from "@/domain/locket/link";
 import { getLocketLink } from "@/infrastructure/ble/getLocketLink";
@@ -21,6 +22,7 @@ type ControllerValue = SessionState & {
   startRecording(): Promise<void>;
   stopRecording(): Promise<void>;
   uploadWaiting(): Promise<void>;
+  discardWaiting(): Promise<void>;
 };
 
 const Ctx = React.createContext<ControllerValue | null>(null);
@@ -59,6 +61,7 @@ export function LocketControllerProvider({ children }: { children: React.ReactNo
         firmwareVersion: null,
         message: null,
         pending: 0,
+        notPaired: false,
         lastRecordingId: null,
       };
     const send = (command: string) => run(async () => link?.send(command));
@@ -79,8 +82,12 @@ export function LocketControllerProvider({ children }: { children: React.ReactNo
       startRecording: () => send(recStart()),
       stopRecording: () => send(recStop()),
       uploadWaiting: () => run(async () => session?.uploadWaiting()),
+      discardWaiting: () => run(async () => session?.discardWaiting()),
     };
   }, [state, session, link, busy, run]);
+
+  // A locket is connected and may be sending a meeting of hours: keep the screen on so the page keeps receiving.
+  useKeepAwake(value.connected);
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

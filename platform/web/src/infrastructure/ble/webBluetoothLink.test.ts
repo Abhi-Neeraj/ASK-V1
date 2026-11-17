@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { LOCKET_UUIDS } from "@/domain/locket/uuids";
 import {
   type WebBluetooth,
@@ -181,6 +181,28 @@ describe("WebBluetoothLocketLink", () => {
     await link.connect("dev-1");
     expect(await link.readInfo()).toBe("ASKINFO/1 ASK-7K2M9Q 1.0.0 -1 0");
     expect(Array.from(await link.readNonce())).toEqual(new Array(16).fill(7));
+  });
+
+  it("a read that never answers gives up and does not hold back what comes next", async () => {
+    const { device, chars } = fakeLocket();
+    const link = new WebBluetoothLocketLink(fakeBluetooth(device).bluetooth, () => true);
+    link.scan(() => undefined);
+    await flush();
+    await link.connect("dev-1");
+    chars.get(LOCKET_UUIDS.info)?.reads.push(() => new Promise<Uint8Array>(() => undefined)); // the radio drops it
+    vi.useFakeTimers();
+    try {
+      const stuck = link.readInfo();
+      const next = link.send("ACK SESSION000000001 64");
+      const outcome = expect(stuck).rejects.toThrow(/did not answer/);
+      await vi.advanceTimersByTimeAsync(15_001);
+      await outcome;
+      await vi.advanceTimersByTimeAsync(20);
+      await next;
+      expect(chars.get(LOCKET_UUIDS.control)?.written).toEqual(["ACK SESSION000000001 64"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses to connect to a locket that was never picked in this browser tab", async () => {

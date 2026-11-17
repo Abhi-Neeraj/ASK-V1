@@ -1,6 +1,16 @@
 {
+  "headers": [
+    {
+      "source": "/_expo/static/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/assets/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    }
+  ],
   "rewrites": [
-    { "source": "/api/:path*", "destination": "https://ask-api-k3xe.onrender.com/api/:path*" },
+    { "source": "/api/:path*", "destination": "https://api-production-8ec46c9b.up.railway.app/api/:path*" },
     { "source": "/((?!_expo/|assets/|api/).*)", "destination": "/index.html" }
   ]
 }
