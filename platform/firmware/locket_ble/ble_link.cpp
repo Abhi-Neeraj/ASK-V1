@@ -172,6 +172,15 @@ class ServerEvents : public BLEServerCallbacks {
     passkeyShown = false;
     connHandle = desc->conn_handle;
     connectedMs = millis();
+    // Ask the phone for a fast link (see config.h). The phone may refuse or pick values of its own: audio is then
+    // slower, never wrong.
+    struct ble_gap_upd_params fast;
+    memset(&fast, 0, sizeof(fast));
+    fast.itvl_min = kConnIntervalMin;
+    fast.itvl_max = kConnIntervalMax;
+    fast.latency = kConnLatency;
+    fast.supervision_timeout = kConnSupervisionTimeout;
+    ble_gap_update_params(desc->conn_handle, &fast);
 #if ASK_TEST_NO_PASSKEY
     // TEST ONLY (no-code mode): the link is NOT encrypted and nothing is ever bonded, so there is no bond on either
     // side that can go stale ("forget the ASK device in the phone's settings" is never needed again), and nothing
@@ -342,6 +351,9 @@ static bool notifyRaw(BLECharacteristic* c, const uint8_t* data, size_t length) 
 
 bool notifyAudio(const uint8_t* frame, size_t length) {
   if (!connected() || length + 3 > peerMtu) return false;
+  // Never take the stack's last few buffers: the phone's confirmations need one to be received, and a lost
+  // confirmation is what made the locket think the phone had gone quiet (log: "ble_att_svr_pkt rc=6").
+  if (os_msys_num_free() < kMbufReserve) return false;
   return notifyRaw(audioChar, frame, length);
 }
 

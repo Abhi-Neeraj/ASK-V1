@@ -47,6 +47,13 @@ also never has more than `kSendWindowFrames` (96) frames beyond the phone's last
 frame every 12 ms, and its "the phone went quiet" log line now says what the phone last confirmed, the last frame sent
 and how often the Bluetooth stack refused a frame. Not compiled or flashed here.
 
+**Bluetooth buffers and link speed (2026-11-18, from a real log):** a recording showed "the phone went quiet" at frame 33 and
+`NimBLE: ble_att_svr_pkt rc=6` (out of memory): the audio frames used up the stack's few small buffers, so the phone's
+confirmations could not be received. The locket now hands a frame to the stack only while at least `kMbufReserve` (6)
+buffers are free, and asks the phone for a 15 to 30 ms link (`kConnIntervalMin/Max`) because audio needs about 8.2 KB/s and
+a slow link carries less. A build that still prints the older "went quiet" line (without "it confirmed ..., last sent ...,
+stack refused ...") is NOT this firmware. Not compiled or flashed here.
+
 Every start prints a warning while the no-code mode is on. Pair through the ASK website or app, not the phone's
 Bluetooth settings: the server records who the locket belongs to only that way, and it still checks the locket's proof
 of the bond. A different mode can be switched on at build time without editing the file, for example

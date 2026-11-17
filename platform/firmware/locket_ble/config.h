@@ -132,6 +132,17 @@ constexpr uint32_t kSendBurst = 1;
 constexpr uint32_t kSendIntervalMs = 12;
 constexpr uint32_t kSendRetryMs = 50;
 constexpr uint32_t kSendWindowFrames = 96;
+// 2026-11-18, from a real recording: "the phone went quiet" at frame 33, then "NimBLE: ble_att_svr_pkt rc=6" (rc 6 is
+// "out of memory"). The audio frames fill the Bluetooth stack's few small buffers, so the stack has none left to receive
+// the phone's confirmation, which is then lost. So frames are only handed to the stack while at least kMbufReserve
+// buffers are free (the phone's writes always find room), and the locket asks the phone for a faster link: audio
+// needs about 8.2 KB/s, and a slow link (50 ms between exchanges, two packets each) carries less than that, so the
+// queue could only grow.
+constexpr int kMbufReserve = 6;
+constexpr uint16_t kConnIntervalMin = 12;          // in 1.25 ms steps: 15 ms
+constexpr uint16_t kConnIntervalMax = 24;          // 30 ms
+constexpr uint16_t kConnLatency = 0;               // answer every exchange
+constexpr uint16_t kConnSupervisionTimeout = 400;  // in 10 ms steps: a lost link is noticed after 4 s
 constexpr uint32_t kStatusEveryMs = 2000;
 // A new pairing number (and so a new code) at least this often, and after every pairing attempt.
 constexpr uint32_t kNonceRotateMs = 600000;
