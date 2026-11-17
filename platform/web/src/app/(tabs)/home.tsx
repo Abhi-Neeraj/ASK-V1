@@ -148,6 +148,9 @@ export default function Today() {
           <Button label="Pair it now" kind="secondary" onPress={() => router.push("/lockets")} />
         </View>
       ) : null}
+      {lockets?.length ? (
+        <Button label="Pair or register a locket" kind="secondary" onPress={() => router.push("/lockets")} />
+      ) : null}
       {locket.available && locket.message && !locket.connected ? <Notice>{locket.message}</Notice> : null}
       {locket.available && locket.pending > 0 ? (
         <Card>
