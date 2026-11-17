@@ -77,7 +77,7 @@ def test_long_audio_is_cut_into_short_pieces_sent_together_with_offsets(
     samples, rate = read_pcm16_mono(path)
     cuts = split_points(samples, rate)
     pieces = len(cuts) - 1
-    assert 6 <= pieces <= 7  # about 20 seconds each
+    assert 12 <= pieces <= 14  # about 10 seconds each
     assert len(client.requests) == pieces
     first = client.requests[0]
     assert first["config"]["encoding"] == "LINEAR16" and first["config"]["sample_rate_hertz"] == 16000
@@ -96,7 +96,7 @@ def test_long_audio_is_cut_into_short_pieces_sent_together_with_offsets(
 
 def test_one_short_request_keeps_its_speaker_labels(settings: Settings, tmp_path: Path) -> None:
     client = FakeSpeechClient()
-    GoogleSpeech(settings, client=client).transcribe(wav(tmp_path, 40.0))
+    GoogleSpeech(settings, client=client).transcribe(wav(tmp_path, 10.0))
     assert len(client.requests) == 1
     assert client.requests[0]["config"]["diarization_config"]["enable_speaker_diarization"] is True
 
@@ -113,8 +113,13 @@ def noisy(seconds: float, gaps: list[tuple[float, float]], rate: int = 16000) ->
 
 
 def test_pieces_are_cut_in_the_pauses(settings: Settings) -> None:
-    gaps = [(20.6, 21.0), (38.9, 39.4), (61.2, 61.8), (78.5, 79.0)]  # each within 2 s of a 20-second multiple
-    samples = noisy(100.0, gaps)
+    gaps = [
+        (10.4, 10.8),
+        (19.7, 20.2),
+        (30.3, 30.7),
+        (39.6, 40.1),
+    ]  # each within 1.5 s of a 10-second multiple
+    samples = noisy(50.0, gaps)
     cuts = split_points(samples, 16000)
     inner = cuts[1:-1]
     assert len(inner) == len(gaps)
@@ -131,8 +136,8 @@ def test_cuts_cover_everything_and_pieces_stay_within_a_request(settings: Settin
         lengths = [(b - a) / 16000 for a, b in pairwise(cuts)]
         assert max(lengths) <= 55
         if len(lengths) > 1:
-            assert min(lengths) >= 3  # a tiny tail is not sent on its own
-    assert split_points(noisy(55.0, []), 16000) == [0, 55 * 16000]  # up to one request: one piece
+            assert min(lengths) >= 2  # a tiny tail is not sent on its own
+    assert split_points(noisy(12.0, []), 16000) == [0, 12 * 16000]  # a short clip is one request: one piece
 
 
 def test_pieces_are_sent_at_the_same_time(settings: Settings, tmp_path: Path) -> None:
@@ -179,7 +184,7 @@ def test_speaker_tags_become_turns(settings: Settings, tmp_path: Path) -> None:
 def test_labels_are_linked_only_when_the_recording_went_in_one_request(
     settings: Settings, tmp_path: Path
 ) -> None:
-    """A recording over 55 seconds is sent in pieces, and Google labels speakers within one piece only."""
+    """A recording over 12 seconds is sent in pieces, and Google labels speakers within one piece only."""
     one = GoogleSpeech(settings, client=FakeSpeechClient())
     short = wav(tmp_path, 3.0)
     one.transcribe(short)
@@ -190,7 +195,7 @@ def test_labels_are_linked_only_when_the_recording_went_in_one_request(
     long_ = tmp_path / "long.wav"
     long_.write_bytes(make_wav(120.0))
     several.transcribe(long_)
-    assert len(client.requests) > 1  # about 20 seconds each
+    assert len(client.requests) > 1  # about 10 seconds each
     assert GoogleDiarizer(several).diarize(long_).labels_linked is False
 
 

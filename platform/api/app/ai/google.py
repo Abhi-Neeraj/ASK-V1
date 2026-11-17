@@ -3,11 +3,13 @@
 Audio leaves this server: it is sent to Google. The libraries (`pip install -e ".[google]"`) are imported only
 when a client is built, so the rest of the application, and the tests, never need them.
 
-Speech-to-Text's synchronous `recognize` accepts at most one minute of audio. Audio up to 55 seconds is one
-request, with Google's speaker labels. Longer audio is cut at pauses into pieces of about 20 seconds that are
-sent at the same time, without speaker labels (they are the slowest part of a request, and labels of different
-pieces never matched each other); the results are put back together with each piece's offset. The timings in
-the code come from the real service; the tests use stand-in clients.
+Speech-to-Text's synchronous `recognize` accepts at most one minute of audio, and a request takes about 1.5
+seconds plus 0.12 seconds for every second of audio (measured on the real service: 6 s of audio 1.6 s,
+10 s 2.2 s, 20 s 4 s). So audio up to 12 seconds is one request, with Google's speaker labels; anything
+longer is cut at pauses into pieces of about 10 seconds that are sent at the same time (a minute of speech
+is ready in about 5 to 8 seconds instead of about 14), without speaker labels (they are the slowest part of a
+request, and labels of different pieces never matched each other); the results are put back together with
+each piece's offset. The timings in the code come from the real service; the tests use stand-in clients.
 """
 
 from __future__ import annotations
@@ -32,7 +34,8 @@ from app.ai.types import (
 )
 from app.config import Settings
 
-CHUNK_SECONDS = 55
+CHUNK_SECONDS = 55  # the most one synchronous request may take (the pieces below are far shorter)
+SINGLE_REQUEST_SECONDS = 12  # up to this long: one request, with speaker labels
 SPEECH_TIMEOUT_SECONDS = 120.0
 GEMINI_TIMEOUT_MS = 60_000
 GEMINI_API_VERSION = "v1beta"
@@ -65,23 +68,23 @@ TRUNCATED_NOTE_NO_TIME = "\n\n(Note: this recording is very long, so only its fi
 # Speed. A synchronous request is answered in a fraction of the audio's length, so a long recording is cut
 # into short pieces sent at the same time: eight minutes took 127 s one 55-second piece after another and
 # about 25 s all at once on the real service (from a home connection; less from a data centre).
-PIECE_SECONDS = 20  # about this long, each cut moved to the quietest moment so a word is not cut in half
-SPLIT_SEARCH_SECONDS = 2.0  # how far either side of the target a quieter moment is looked for
-MIN_LAST_PIECE_SECONDS = 3.0  # a shorter tail is left on the piece before it
-MAX_PARALLEL_REQUESTS = 24
+PIECE_SECONDS = 10  # about this long, each cut moved to the quietest moment so a word is not cut in half
+SPLIT_SEARCH_SECONDS = 1.5  # how far either side of the target a quieter moment is looked for
+MIN_LAST_PIECE_SECONDS = 2.0  # a shorter tail is left on the piece before it
+MAX_PARALLEL_REQUESTS = 32
 
 
 def split_points(samples: Any, rate: int) -> list[int]:
     """Where to cut a recording: `[0, c1, ..., len(samples)]`.
 
-    Up to CHUNK_SECONDS (what one synchronous request takes) it is one piece. Longer, there is a cut about
+    Up to SINGLE_REQUEST_SECONDS it is one piece (with speaker labels). Longer, there is a cut about
     every PIECE_SECONDS, each moved to the quietest 50 milliseconds within SPLIT_SEARCH_SECONDS, so a pause
     is cut and not a word. `samples` is 16-bit mono (an `array('h')`).
     """
     import numpy as np
 
     total = len(samples)
-    if total <= CHUNK_SECONDS * rate:
+    if total <= SINGLE_REQUEST_SECONDS * rate:
         return [0, total]
     loudness = np.frombuffer(samples, dtype=np.int16)
     hop = max(rate // 20, 1)
@@ -98,6 +101,9 @@ def split_points(samples: Any, rate: int) -> list[int]:
             cuts.append(cut)
         k += 1
     cuts.append(total)
+    # Cuts move to quiet moments, so the tail can end up shorter than planned: join it to the piece before.
+    if len(cuts) > 2 and cuts[-1] - cuts[-2] < MIN_LAST_PIECE_SECONDS * rate:
+        del cuts[-2]
     return cuts
 
 
@@ -354,7 +360,7 @@ def build_google(settings: Settings) -> Provider:
     notes = (
         *missing,
         "Audio is sent to Google Cloud Speech-to-Text and transcripts to Gemini.",
-        "Speaker labels are per 55-second piece: Speaker 1 in one minute need not be Speaker 1 in the next.",
+        "Speaker labels exist only for recordings up to 12 seconds (longer ones go in parallel pieces).",
     )
     return Provider(
         name="google",

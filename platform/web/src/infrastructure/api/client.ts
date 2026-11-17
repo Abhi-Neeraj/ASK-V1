@@ -31,12 +31,12 @@ export type ApiClient = {
 const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 // While the server restarts (a new version going live) or a request hits a moment of overload, the proxy in front
-// of it answers 502, 503 or 504. Try again soon and a little later each time, for about 30 seconds before giving
-// up: it used to wait 5 seconds before the first retry (made for a free host that slept), so one dropped request
-// froze a screen for 5 seconds. Repeating a request is safe here: uploads carry their own ID and the server
-// acknowledges a repeat without storing it twice.
+// of it answers 502, 503 or 504. Try again soon and a little later each time: the first retry comes after 0.6
+// seconds (it used to be 5, so one dropped request froze a screen for 5 seconds), and the waits add up to about a
+// minute, because a free server that went to sleep takes about that long to wake. Repeating a request is safe
+// here: uploads carry their own ID and the server acknowledges a repeat without storing it twice.
 const WAKING = new Set([502, 503, 504]);
-const WAKE_WAITS_MS = [600, 1_500, 4_000, 8_000, 16_000];
+const WAKE_WAITS_MS = [600, 1_500, 4_000, 8_000, 16_000, 30_000];
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function createClient({

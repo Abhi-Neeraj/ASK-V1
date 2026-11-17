@@ -51,7 +51,7 @@ describe("createClient", () => {
     });
     await client.request("GET", "/api/lockets").catch(() => undefined);
     expect(waits[0]).toBeLessThanOrEqual(1000);
-    expect(waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(40_000);
+    expect(waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(65_000);
   });
 
   it("gives_up_with_a_clear_message_when_the_server_stays_down", async () => {
