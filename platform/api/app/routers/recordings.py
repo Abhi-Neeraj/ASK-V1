@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import FileResponse
 from sqlalchemy import select
+from starlette.background import BackgroundTask
 
 from app.errors import ApiError, not_found
 from app.models import ProcessingJob, Recording
@@ -20,10 +21,10 @@ from app.schemas.recordings import (
     TranscriptPatchIn,
 )
 from app.security.deps import Authed, DbDep, Manager, SettingsDep
+from app.services import audio_archive, textfiles
 from app.services import insights as insights_service
 from app.services import meeting as meetings
 from app.services import recordings as svc
-from app.services import textfiles
 from app.services.audit import record_audit
 from app.services.storage import Storage
 
@@ -106,8 +107,15 @@ def get_audio(
     if download and not ctx.can_manage:
         raise ApiError(403, "forbidden", "Only managers and administrators can download audio.")
     storage = _storage(request)
-    if not storage.exists(recording.storage_key):
-        raise not_found("audio file")
+    # The file on the server's disk, or, when the disk does not keep it (a free host restarts with an empty
+    # one), the compressed copy in the database, decoded to a temporary WAV that is removed after it is sent.
+    local = storage.exists(recording.storage_key)
+    temporary = None
+    if not local:
+        temporary = storage.new_temp_path()
+        if not audio_archive.restore(db, recording.id, temporary):
+            temporary.unlink(missing_ok=True)
+            raise not_found("audio file")
     # Playback and saving stream the same bytes, so playback is recorded too. A player asks for a clip in many
     # pieces as it plays or is scrubbed; only the request for the start of the clip is an access worth a row.
     range_header = request.headers.get("range")
@@ -125,7 +133,8 @@ def get_audio(
         db.commit()
     disposition = "attachment" if download else "inline"
     return FileResponse(
-        storage.path_for(recording.storage_key),
+        storage.path_for(recording.storage_key) if temporary is None else temporary,
+        background=None if temporary is None else BackgroundTask(temporary.unlink, missing_ok=True),
         media_type="audio/wav",
         # The filename is built from the ID, never from the stored path.
         headers={

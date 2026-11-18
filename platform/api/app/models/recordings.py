@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -197,6 +198,23 @@ class TranscriptSegment(Base):
         Index("ix_transcript_segments_company", "company_id"),
         Index("ix_transcript_segments_person", "person_id"),
     )
+
+
+class RecordingAudio(Base):
+    """A compressed copy of a recording's audio kept in the database, so playback survives a server with no
+    permanent disk (a free host). IMA ADPCM, four bits a sample: a quarter of the WAV's size. See
+    app/services/audio_archive.py."""
+
+    __tablename__ = "recording_audio"
+
+    recording_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("recordings.id", ondelete="CASCADE"), primary_key=True
+    )
+    sample_rate: Mapped[int] = mapped_column(Integer)
+    pcm_bytes: Mapped[int] = mapped_column(Integer)  # the WAV's sample data, decoded
+    stored_bytes: Mapped[int] = mapped_column(Integer)
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = created_at_column()
 
 
 class RecordingAnalysis(Base):

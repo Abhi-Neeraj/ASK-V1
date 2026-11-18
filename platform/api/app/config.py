@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     # fill a 500 MB volume; transcripts and summaries are a few hundred kilobytes. Off by default (audio is
     # kept). With it on, playback and "process again" are not available once the audio has been removed.
     delete_audio_after_processing: bool = False
+    # Keep a compressed copy of each recording's audio in the database (see app/services/audio_archive.py),
+    # up to this many bytes in total (0 = do not). Once archived, the file on the server's disk is removed.
+    audio_archive_max_bytes: int = Field(default=0, ge=0)
     # How much Gemini may "think" before it writes the summary. 0 switches thinking off: on the real service
     # the summary of a meeting took about 6 s with the default and about 2 s without, and a summary of what
     # was said needs no reasoning. -1 leaves the model's own default (for a model that needs to think).

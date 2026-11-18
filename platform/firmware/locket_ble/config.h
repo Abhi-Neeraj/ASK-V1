@@ -102,8 +102,14 @@ constexpr uint32_t kWriterDrainTimeoutMs = 120000;
 // in one-minute parts), so the audio crosses Bluetooth while people are still talking; every part after that is
 // kLongPartFactor times longer, so a very long meeting still fits the sender's part slots (askble::kMaxParts: 30
 // short parts plus the long ones cover about six hours). Not run on a board.
+//
+// 2026-11-18, the owner's decision: record first, send when the recording is DONE. The locket no longer sends while it
+// records (sender.cpp waits until the recording has stopped: no Bluetooth traffic competes with the card writes, and
+// nothing can stall mid-recording), and every part is five minutes (kLiveParts 0: all parts are kLongPartFactor times
+// kDefaultSegmentSeconds), so a recording under five minutes is ONE part, one item on the website, with its own
+// transcript, summary and audio. Six hours is 72 parts, within askble::kMaxParts.
 constexpr uint32_t kDefaultSegmentSeconds = 60;
-constexpr uint32_t kLiveParts = 30;
+constexpr uint32_t kLiveParts = 0;
 constexpr uint32_t kLongPartFactor = 5;
 constexpr uint32_t kDefaultMaxClipSeconds = 600;
 constexpr uint32_t kDefaultMaxUploadBytes = 25u * 1024 * 1024;

@@ -233,9 +233,10 @@ static void runSession() {
       offset += take;
       if (fill == kRingBlockBytes) {
         blocksInPart++;
-        // Short parts at first, so audio reaches the phone while people are still talking; longer ones later.
+        // With kLiveParts above 0 the first parts are short (audio reaches the phone while people are still talking);
+        // at 0, every part is kLongPartFactor times kDefaultSegmentSeconds: five minutes (record first, send after).
         const uint32_t partLimit =
-            partsClosed < kLiveParts ? session.partBlocks : session.partBlocks * kLongPartFactor;
+            (kLiveParts > 0 && partsClosed < kLiveParts) ? session.partBlocks : session.partBlocks * kLongPartFactor;
         const bool endsPart = blocksInPart >= partLimit;
         sdwriter::submit(block, fill, endsPart);
         if (endsPart) {

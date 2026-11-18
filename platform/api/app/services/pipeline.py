@@ -47,7 +47,7 @@ from app.models import (
     TranscriptSegment,
     VoiceProfile,
 )
-from app.services import insights, jobs, meeting, signatures
+from app.services import audio_archive, insights, jobs, meeting, signatures
 from app.services.alignment import AlignedSegment, align
 from app.services.audio import inspect_wav
 from app.services.audit import publish_event, record_audit, recording_event
@@ -164,7 +164,10 @@ class Pipeline:
                     summary = summary_job.result()
                 self._check(lost)
             self._save(job, work, transcription, diarization, aligned, identities, analysis, summary)
-            if self.settings.delete_audio_after_processing:
+            # Once a copy is safe in the database the file on the disk is not needed (a free host's disk is
+            # small and does not last), so it goes too.
+            archived = self._archive(work)
+            if archived or self.settings.delete_audio_after_processing:
                 self._drop_audio(work)
             return "done"
         except RecordingGoneError:
@@ -185,6 +188,15 @@ class Pipeline:
                 "processing job %s failed (attempt %s of %s)", job.id, job.attempts, job.max_attempts
             )
             return self._failed(job, f"{type(error).__name__}: {error}", permanent=False)
+
+    def _archive(self, work: _Work) -> bool:
+        """Keep a compressed copy of the audio in the database (ASK_AUDIO_ARCHIVE_MAX_BYTES). Best effort: it
+        never fails the job."""
+        if self.settings.audio_archive_max_bytes <= 0:
+            return False
+        path = self.storage.path_for(work.storage_key)
+        with self.factory() as db:
+            return audio_archive.archive(db, self.settings, work.recording_id, path)
 
     def _drop_audio(self, work: _Work) -> None:
         """The transcript is saved; remove the audio file (ASK_DELETE_AUDIO_AFTER_PROCESSING). Never fails the

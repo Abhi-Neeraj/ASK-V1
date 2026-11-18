@@ -56,6 +56,10 @@ ENV ASK_WORKER_WAKE_FILE=/tmp/ask-worker-wake \
     ASK_WORKER_SLEEPY_AFTER_SECONDS=600 \
     ASK_BACKGROUND_INTERVAL_SECONDS=3600
 
+# Keep a compressed copy of each recording's audio in the database (up to 700 MB), so "Play audio" still works
+# after this host restarts and its disk is empty again. See app/services/audio_archive.py.
+ENV ASK_AUDIO_ARCHIVE_MAX_BYTES=700000000
+
 EXPOSE 8000
 
 # `--factory` is required: nothing is built at import time. The short graceful timeout keeps open

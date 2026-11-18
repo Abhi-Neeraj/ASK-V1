@@ -16,6 +16,7 @@ from app.models.recordings import (
     Recording,
     RecordingAccess,
     RecordingAnalysis,
+    RecordingAudio,
     Transcript,
     TranscriptSegment,
 )
@@ -46,6 +47,7 @@ __all__ = [
     "Recording",
     "RecordingAccess",
     "RecordingAnalysis",
+    "RecordingAudio",
     "Transcript",
     "TranscriptSegment",
     "User",

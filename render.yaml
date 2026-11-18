@@ -58,8 +58,13 @@ services:
       # The Neon connection string (postgresql://...?sslmode=require).
       - key: ASK_DATABASE_URL
         sync: false
+      # Record first, then the website transcribes, summarises and KEEPS the recording. This host has no permanent
+      # disk, so a compressed copy of each recording's audio is kept in the database (up to 700 MB of Neon's free
+      # 1 GB: about 25 hours of speech); see app/services/audio_archive.py.
       - key: ASK_DELETE_AUDIO_AFTER_PROCESSING
-        value: "true"
+        value: "false"
+      - key: ASK_AUDIO_ARCHIVE_MAX_BYTES
+        value: "700000000"
       - key: ASK_LOCKET_CODE_REQUESTS_PER_HOUR
         value: "30"
       - key: ASK_LOCKET_CODE_REQUESTS_PER_LOCKET_PER_HOUR

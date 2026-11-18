@@ -112,10 +112,10 @@ describe("RecordingCapture", () => {
     expect(RecordingCapture.DEFAULT_BLOCKS_PER_PART * SAMPLES_PER_BLOCK).toBeLessThanOrEqual(9 * 60 * 16000);
   });
 
-  it("the_default_part_is_about_a_minute_so_uploads_start_while_the_meeting_is_still_arriving", () => {
+  it("the_default_part_is_five_minutes_like_a_part_on_the_locket_so_a_short_recording_is_one_item", () => {
     const seconds = (RecordingCapture.DEFAULT_BLOCKS_PER_PART * SAMPLES_PER_BLOCK) / 16000;
-    expect(seconds).toBeGreaterThanOrEqual(55);
-    expect(seconds).toBeLessThanOrEqual(65);
+    expect(seconds).toBeGreaterThanOrEqual(295);
+    expect(seconds).toBeLessThanOrEqual(305);
   });
 
   it("frames_it_already_has_are_answered_with_the_last_confirmation_again_but_not_every_time", () => {
