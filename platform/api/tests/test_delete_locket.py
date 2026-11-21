@@ -71,10 +71,10 @@ def listed(client) -> list[str]:  # type: ignore[no-untyped-def]
     return [item["id"] for item in page["items"]]
 
 
-def test_deleting_one_part_leaves_the_rest_of_the_meeting(app, acme) -> None:  # type: ignore[no-untyped-def]
+def test_deleting_a_later_part_leaves_the_rest_of_the_meeting(app, acme) -> None:  # type: ignore[no-untyped-def]
     setup, first, second = two_part_meeting(app)
-    assert setup["manager"].delete(f"/api/recordings/{first}").status_code == 204
-    assert listed(setup["manager"]) == [str(second)]
+    assert setup["manager"].delete(f"/api/recordings/{second}").status_code == 204
+    assert listed(setup["manager"]) == [str(first)]
 
 
 def test_deleting_a_meeting_removes_every_part(app, acme) -> None:  # type: ignore[no-untyped-def]

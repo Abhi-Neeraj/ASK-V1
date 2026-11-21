@@ -19,6 +19,7 @@ import logging
 import struct
 import warnings
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,17 @@ def compress(wav_path: Path) -> tuple[bytes, int, int]:
     return bytes(packed), rate, pcm_bytes
 
 
+def decode_chunks(data: bytes) -> Iterator[bytes]:
+    """The archived ADPCM as PCM, a piece at a time."""
+    if audioop is None:
+        raise RuntimeError("audioop is not available")
+    state = None
+    step = _CHUNK // 4
+    for start in range(0, len(data), step):
+        pcm, state = audioop.adpcm2lin(data[start : start + step], 2, state)
+        yield pcm
+
+
 def write_wav(data: bytes, sample_rate: int, pcm_bytes: int, destination: Path) -> None:
     """Decode archived audio into a WAV file at `destination`."""
     if audioop is None:
@@ -76,10 +88,7 @@ def write_wav(data: bytes, sample_rate: int, pcm_bytes: int, destination: Path) 
         out.write(b"RIFF" + struct.pack("<I", 36 + pcm_bytes) + b"WAVEfmt ")
         out.write(struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16))
         out.write(b"data" + struct.pack("<I", pcm_bytes))
-        state = None
-        step = _CHUNK // 4
-        for start in range(0, len(data), step):
-            pcm, state = audioop.adpcm2lin(data[start : start + step], 2, state)
+        for pcm in decode_chunks(data):
             out.write(pcm)
 
 

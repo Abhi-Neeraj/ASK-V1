@@ -102,10 +102,10 @@ bool session_id_make(const char* session_ref, char out[17]);
 
 // --- meetings as frame numbers ------------------------------------------------------------------------
 
-// Parts of one meeting the sender can track. 120 (it was 64): the first 30 parts are a minute long, the rest five
-// minutes (config.h), so a 6-hour recording (kMaxSessionSeconds) is 96 parts; every part beyond this limit would be
-// ignored by the sender.
-const uint32_t kMaxParts = 120;
+// Parts of one meeting the sender can track. 150 (it was 120, and 64 before): the first 60 parts are 30 seconds
+// long, the rest four minutes (config.h), so a 6-hour recording (kMaxSessionSeconds) is 142 parts; every part
+// beyond this limit would be ignored by the sender. (Each slot costs about 100 bytes in three copies.)
+const uint32_t kMaxParts = 150;
 struct SessionMap {
   uint32_t parts;
   uint32_t blocks[kMaxParts];  // AUDIO frames in each part (its last block padded with silence)

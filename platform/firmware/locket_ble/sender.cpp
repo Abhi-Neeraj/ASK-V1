@@ -339,9 +339,9 @@ static void run(void*) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
       continue;
     }
-    // Record first, send when the recording is done: nothing crosses Bluetooth while the locket is recording (a
-    // meeting that was being sent carries on afterwards, from where the phone last confirmed).
-    if (status::busyRecording()) {
+    // With kSendWhileRecording off (record first, send when done): nothing crosses Bluetooth while the locket is
+    // recording; a meeting that was being sent carries on afterwards, from where the phone last confirmed.
+    if (!kSendWhileRecording && status::busyRecording()) {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
       continue;
     }

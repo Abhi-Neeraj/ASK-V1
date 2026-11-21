@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import Select, and_, exists, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app import timeutil
 from app.errors import ApiError, not_found
@@ -32,6 +32,7 @@ from app.schemas.recordings import (
 )
 from app.security.deps import Ctx
 from app.services import insights
+from app.services import meeting as meetings
 from app.services.audit import publish_event, record_audit, recording_event
 from app.services.storage import Storage
 
@@ -74,6 +75,21 @@ def visible_recordings(ctx: Ctx) -> Select[Recording]:
     return query
 
 
+def heads_only(query: Select[Recording]) -> Select[Recording]:
+    """One row for each recording as a person knows it. The locket sends a long recording in parts (half a
+    minute each while it is being sent), and the website shows them as ONE item: the first part still on the
+    server stands for the whole, with the whole one's length, state, transcript and audio (see
+    `recording_outs`). A recording that is not part of a session is its own head."""
+    other = aliased(Recording)
+    earlier_part = exists().where(
+        other.device_id == Recording.device_id,
+        other.session_ref == Recording.session_ref,
+        other.deleted_at.is_(None),
+        other.sequence < Recording.sequence,
+    )
+    return query.where(~earlier_part)
+
+
 def get_visible_recording(db: Session, ctx: Ctx, recording_id: uuid.UUID) -> Recording:
     recording = db.scalar(visible_recordings(ctx).where(Recording.id == recording_id))
     if recording is None:
@@ -95,6 +111,7 @@ class Filters:
     min_duration_ms: int | None = None
     max_duration_ms: int | None = None
     session_ref: str | None = None
+    include_parts: bool = False  # list every part of a recording, not one row for the whole
     sort: str = "startedAt"
     descending: bool = True
     page: int = 1
@@ -143,6 +160,8 @@ def apply_filters(query: Select[Recording], filters: Filters) -> Select[Recordin
 
 def search(db: Session, ctx: Ctx, filters: Filters) -> tuple[list[Recording], int]:
     base = apply_filters(visible_recordings(ctx), filters)
+    if not (filters.include_parts or filters.session_ref or filters.q or filters.person_id is not None):
+        base = heads_only(base)  # a text or person search lists the part that matched
     total = db.scalar(select(func.count()).select_from(base.order_by(None).subquery())) or 0
     column = SORT_COLUMNS.get(filters.sort, Recording.started_at)
     ordered = base.order_by(column.desc() if filters.descending else column.asc(), Recording.id)
@@ -192,17 +211,37 @@ def _summaries(
     return snippets, speakers, placeholders
 
 
-def _part_counts(
-    db: Session, recordings: list[Recording]
-) -> dict[tuple[uuid.UUID, str], tuple[int, int, datetime]]:
+_MeetingFacts = tuple[int, int, datetime, datetime, int | None, str]
+# (parts, total milliseconds, first start, last end, number of the first part, state of the whole)
+
+
+def _whole_state(states: set[str]) -> str:
+    """The state of a recording made of parts: still working while any part is, otherwise failed if any part
+    failed, then needs review, else completed."""
+    for state in ACTIVE_STATES:
+        if state in states:
+            return state
+    for state in ("failed", "needs_review"):
+        if state in states:
+            return state
+    return "completed" if "completed" in states else sorted(states)[0]
+
+
+def _part_counts(db: Session, recordings: list[Recording]) -> dict[tuple[uuid.UUID, str], _MeetingFacts]:
     """For each meeting on this page, keyed by (locket, session reference): how many parts have arrived, their
-    total length in milliseconds and when the first began. A session reference is only meaningful for the
-    locket that chose it, so two lockets never share a count."""
+    total length in milliseconds, when the first began and the last ended, the number of the first part, and
+    the state of the whole. A session reference is only meaningful for the locket that chose it, so two
+    lockets never share a count."""
     keys: set[tuple[uuid.UUID, str]] = {
         (r.device_id, r.session_ref) for r in recordings if r.session_ref is not None and r.session_ref != ""
     }
     if not keys:
         return {}
+    where = (
+        Recording.device_id.in_({device for device, _ in keys}),
+        Recording.session_ref.in_({ref for _, ref in keys}),
+        Recording.deleted_at.is_(None),
+    )
     rows = db.execute(
         select(
             Recording.device_id,
@@ -210,34 +249,36 @@ def _part_counts(
             func.count(),
             func.sum(Recording.duration_ms),
             func.min(Recording.started_at),
+            func.max(Recording.ended_at),
+            func.min(Recording.sequence),
         )
-        .where(
-            Recording.device_id.in_({device for device, _ in keys}),
-            Recording.session_ref.in_({ref for _, ref in keys}),
-            Recording.deleted_at.is_(None),
-        )
+        .where(*where)
         .group_by(Recording.device_id, Recording.session_ref)
     )
+    states: dict[tuple[uuid.UUID, str], set[str]] = defaultdict(set)
+    for device, ref, state in db.execute(
+        select(Recording.device_id, Recording.session_ref, Recording.state).where(*where)
+    ):
+        if ref is not None:
+            states[(device, ref)].add(state)
     return {
-        (device, ref): (count, int(total or 0), first)
-        for device, ref, count, total, first in rows
+        (device, ref): (count, int(total or 0), first, last, lowest, _whole_state(states[(device, ref)]))
+        for device, ref, count, total, first, last, lowest in rows
         if ref is not None and (device, ref) in keys
     }
 
 
 def _meeting(
-    recording: Recording, counts: dict[tuple[uuid.UUID, str], tuple[int, int, datetime]]
-) -> tuple[int, int, datetime] | None:
-    """(parts, total milliseconds, first start) when the recording is one of several parts of a meeting."""
+    recording: Recording, counts: dict[tuple[uuid.UUID, str], _MeetingFacts]
+) -> _MeetingFacts | None:
+    """The facts about the meeting when the recording is one of several parts of it."""
     if not recording.session_ref:
         return None
     found = counts.get((recording.device_id, recording.session_ref))
     return found if found is not None and found[0] > 1 else None
 
 
-def _part_label(
-    recording: Recording, counts: dict[tuple[uuid.UUID, str], tuple[int, int, datetime]]
-) -> int | None:
+def _part_label(recording: Recording, counts: dict[tuple[uuid.UUID, str], _MeetingFacts]) -> int | None:
     """The part number, shown only when it means something: a lone first part is just a recording."""
     if not recording.session_ref or recording.sequence is None:
         return None
@@ -259,32 +300,43 @@ def recording_outs(db: Session, recordings: list[Recording]) -> list[RecordingOu
             if row.is_simulated:
                 simulated.add(row.id)
     parts = _part_counts(db, recordings)
-    return [
-        RecordingOut(
+
+    def whole_of(r: Recording) -> _MeetingFacts | None:
+        """The facts about the whole recording when this row is the first part of several: the row then stands
+        for all of them."""
+        facts = _meeting(r, parts)
+        if facts is None or (r.sequence is not None and facts[4] is not None and r.sequence != facts[4]):
+            return None
+        return facts
+
+    def out(r: Recording) -> RecordingOut:
+        whole = whole_of(r)
+        meeting = _meeting(r, parts)
+        return RecordingOut(
             id=r.id,
             device_id=r.device_id,
             device_name=names.get(r.device_id, "Unknown locket"),
             simulated=r.device_id in simulated,
             started_at=r.started_at,
-            ended_at=r.ended_at,
-            duration_ms=r.duration_ms,
+            ended_at=whole[3] if whole else r.ended_at,
+            duration_ms=whole[1] if whole else r.duration_ms,
             size_bytes=r.size_bytes,
             format=r.format,
             uploaded_at=r.uploaded_at,
             part=_part_label(r, parts),
             session_ref=r.session_ref or None,
-            part_count=meeting[0] if (meeting := _meeting(r, parts)) else None,
+            part_count=meeting[0] if meeting else None,
             meeting_duration_ms=meeting[1] if meeting else None,
             meeting_started_at=meeting[2] if meeting else None,
-            state=r.state,
+            state=whole[5] if whole else r.state,
             retry_count=r.retry_count,
             error=r.error if r.state == "failed" else None,
             snippet=snippets.get(r.id),
             speakers=speakers.get(r.id, []),
             placeholder=r.id in placeholders,
         )
-        for r in recordings
-    ]
+
+    return [out(r) for r in recordings]
 
 
 def transcript_out(db: Session, transcript: Transcript) -> TranscriptOut:
@@ -325,18 +377,67 @@ def find_transcript(db: Session, recording: Recording) -> Transcript | None:
     return db.scalar(select(Transcript).where(Transcript.recording_id == recording.id))
 
 
-def recording_detail(db: Session, recording: Recording, *, can_manage: bool = False) -> RecordingDetailOut:
+def whole_recording_parts(
+    db: Session, recording: Recording, *, can_manage: bool, viewer_id: uuid.UUID | None
+) -> list[Recording]:
+    """The parts that make up the recording this row stands for, in order, when it is the first part of
+    several (otherwise just the recording). Only parts the viewer may see: managers see all, others those that
+    arrived while a locket was theirs."""
+    parts = meetings.session_parts(db, recording)
+    if len(parts) < 2 or parts[0].id != recording.id:
+        return [recording]
+    if can_manage or viewer_id is None:
+        return parts
+    allowed = set(
+        db.scalars(
+            select(RecordingAccess.recording_id).where(
+                RecordingAccess.user_id == viewer_id, RecordingAccess.recording_id.in_([p.id for p in parts])
+            )
+        )
+    )
+    return [p for p in parts if p.id in allowed] or [recording]
+
+
+def _whole_transcript(db: Session, parts: list[Recording]) -> TranscriptOut | None:
+    """The transcripts of the parts joined into one, each part's times moved to where it sits in the whole."""
+    offsets = meetings.part_offsets(parts)
+    joined: TranscriptOut | None = None
+    for part in parts:
+        transcript = find_transcript(db, part)
+        if transcript is None:
+            continue
+        out = transcript_out(db, transcript)
+        shift = offsets[part.id]
+        moved = [
+            s.model_copy(update={"start_ms": s.start_ms + shift, "end_ms": s.end_ms + shift})
+            for s in out.segments
+        ]
+        if joined is None:
+            joined = out.model_copy(update={"segments": moved})
+        else:
+            joined.segments.extend(moved)
+            if out.review_status == "needs_review":
+                joined.review_status = "needs_review"
+            joined.placeholder = joined.placeholder or out.placeholder
+    return joined
+
+
+def recording_detail(
+    db: Session, recording: Recording, *, can_manage: bool = False, viewer_id: uuid.UUID | None = None
+) -> RecordingDetailOut:
     base = recording_outs(db, [recording])[0]
     transcript = find_transcript(db, recording)
+    parts = whole_recording_parts(db, recording, can_manage=can_manage, viewer_id=viewer_id)
     # No summary for placeholder text: a summary of words nobody said would mislead.
     analysis = (
         insights.analysis_out(db, transcript, recording.duration_ms, can_manage=can_manage)
         if transcript is not None and not transcript.is_placeholder
         else None
     )
+    whole = _whole_transcript(db, parts) if len(parts) > 1 else None
     return RecordingDetailOut(
         **base.model_dump(),
-        transcript=transcript_out(db, transcript) if transcript else None,
+        transcript=whole or (transcript_out(db, transcript) if transcript else None),
         audio_url=f"/api/recordings/{recording.id}/audio",
         analysis=analysis,
     )

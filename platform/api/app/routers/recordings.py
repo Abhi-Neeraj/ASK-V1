@@ -21,7 +21,7 @@ from app.schemas.recordings import (
     TranscriptPatchIn,
 )
 from app.security.deps import Authed, DbDep, Manager, SettingsDep
-from app.services import audio_archive, textfiles
+from app.services import audio_archive, meeting_audio, textfiles
 from app.services import insights as insights_service
 from app.services import meeting as meetings
 from app.services import recordings as svc
@@ -56,6 +56,7 @@ def list_recordings(
     min_duration_ms: Annotated[int | None, Query(alias="minDurationMs", ge=0)] = None,
     max_duration_ms: Annotated[int | None, Query(alias="maxDurationMs", ge=0)] = None,
     session_ref: Annotated[str | None, Query(alias="sessionRef", max_length=64)] = None,
+    include_parts: Annotated[bool, Query(alias="includeParts")] = False,
     sort: SortField = "startedAt",
     order: Literal["asc", "desc"] = "desc",
     page: Annotated[int, Query(ge=1, le=100000)] = 1,
@@ -71,6 +72,7 @@ def list_recordings(
         min_duration_ms=min_duration_ms,
         max_duration_ms=max_duration_ms,
         session_ref=session_ref,
+        include_parts=include_parts,
         sort=sort,
         descending=order == "desc",
         page=page,
@@ -83,7 +85,7 @@ def list_recordings(
 @router.get("/api/recordings/{recording_id}", response_model=RecordingDetailOut)
 def get_recording(recording_id: uuid.UUID, ctx: Authed, db: DbDep) -> RecordingDetailOut:
     recording = svc.get_visible_recording(db, ctx, recording_id)
-    detail = svc.recording_detail(db, recording, can_manage=ctx.can_manage)
+    detail = svc.recording_detail(db, recording, can_manage=ctx.can_manage, viewer_id=ctx.user.id)
     # Why it failed (or is being retried) is for the people who can fix it. The text is already cleaned of
     # paths and tokens when it is stored; employees get the fixed sentence in `error` and nothing more.
     if ctx.can_manage and recording.state in {"failed", "retrying"}:
@@ -100,16 +102,23 @@ def get_audio(
     ctx: Authed,
     db: DbDep,
     download: bool = False,
-) -> FileResponse:
+) -> Response:
     """Playback (supports range requests) for anyone who can see the recording. Saving a copy needs a
-    manager or administrator, and is written to the audit log."""
+    manager or administrator, and is written to the audit log. A recording that arrived in parts plays as
+    one."""
     recording = svc.get_visible_recording(db, ctx, recording_id)
     if download and not ctx.can_manage:
         raise ApiError(403, "forbidden", "Only managers and administrators can download audio.")
     storage = _storage(request)
+    parts = svc.whole_recording_parts(db, recording, can_manage=ctx.can_manage, viewer_id=ctx.user.id)
+    merged = (
+        meeting_audio.merge(db, request.app.state.session_factory, storage, parts) if len(parts) > 1 else None
+    )
+    if len(parts) > 1 and merged is None:
+        raise not_found("audio file")
     # The file on the server's disk, or, when the disk does not keep it (a free host restarts with an empty
     # one), the compressed copy in the database, decoded to a temporary WAV that is removed after it is sent.
-    local = storage.exists(recording.storage_key)
+    local = merged is not None or storage.exists(recording.storage_key)
     temporary = None
     if not local:
         temporary = storage.new_temp_path()
@@ -132,16 +141,19 @@ def get_audio(
         )
         db.commit()
     disposition = "attachment" if download else "inline"
+    headers = {
+        "Content-Disposition": f'{disposition}; filename="recording-{recording.id}.wav"',
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if merged is not None:
+        return meeting_audio.response(merged, range_header, headers)
     return FileResponse(
         storage.path_for(recording.storage_key) if temporary is None else temporary,
         background=None if temporary is None else BackgroundTask(temporary.unlink, missing_ok=True),
         media_type="audio/wav",
         # The filename is built from the ID, never from the stored path.
-        headers={
-            "Content-Disposition": f'{disposition}; filename="recording-{recording.id}.wav"',
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=headers,
     )
 
 
@@ -191,15 +203,16 @@ def correct_transcript(
         except Exception:
             logger.exception("could not rebuild the summary after a correction")
     db.commit()
-    return svc.recording_detail(db, recording, can_manage=ctx.can_manage)
+    return svc.recording_detail(db, recording, can_manage=ctx.can_manage, viewer_id=ctx.user.id)
 
 
 @router.delete("/api/recordings/{recording_id}", status_code=204)
 def delete_recording(recording_id: uuid.UUID, ctx: Manager, db: DbDep, meeting: bool = False) -> Response:
-    """Delete one recording, or with `meeting=true` every part of the meeting it belongs to (a meeting of
-    hours is hundreds of one-minute parts). Only parts the caller may see are deleted."""
+    """Delete a recording: all of it when it arrived in parts (it is one item on the website, so deleting it
+    takes every part), and with `meeting=true` every part of the session this one belongs to, even when it is
+    not the first. Only parts the caller may see are deleted."""
     recording = svc.get_visible_recording(db, ctx, recording_id)
-    targets = [recording]
+    targets = svc.whole_recording_parts(db, recording, can_manage=ctx.can_manage, viewer_id=ctx.user.id)
     if meeting:
         parts = meetings.session_parts(db, recording)
         allowed = {

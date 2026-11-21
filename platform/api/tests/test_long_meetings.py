@@ -67,20 +67,20 @@ def test_processing_again_without_the_audio_is_refused_clearly(app, acme) -> Non
     assert response.json()["error"]["code"] == "audio_not_kept"
 
 
-def test_the_meeting_reference_is_in_the_output_so_parts_can_be_shown_as_one_meeting(app, acme) -> None:  # type: ignore[no-untyped-def]
+def test_the_parts_of_one_recording_are_one_row_with_the_whole_ones_length(app, acme) -> None:  # type: ignore[no-untyped-def]
     setup = make_setup(app)
     begin = datetime.now(UTC) - timedelta(minutes=10)
     upload_part(setup, 0, begin)
     upload_part(setup, 1, begin + timedelta(seconds=60))
-    page = setup["employee"].get("/api/recordings?pageSize=10").json()
-    items = page["items"]
-    assert len(items) == 2
-    assert {item["sessionRef"] for item in items} == {SESSION}
-    assert all(item["part"] is not None for item in items)
-    # Every part says how long the whole meeting is and when it began, so a meeting of hours is one row.
-    assert {item["partCount"] for item in items} == {2}
-    assert {item["meetingDurationMs"] for item in items} == {sum(item["durationMs"] for item in items)}
-    assert {item["meetingStartedAt"] for item in items} == {min(item["startedAt"] for item in items)}
+    # One row for the whole recording (the first part stands for it), with the whole one's length...
+    items = setup["employee"].get("/api/recordings?pageSize=10").json()["items"]
+    assert len(items) == 1
+    [whole] = items
+    assert whole["sessionRef"] == SESSION and whole["partCount"] == 2
+    parts = setup["employee"].get("/api/recordings?pageSize=10&includeParts=true").json()["items"]
+    assert len(parts) == 2 and all(item["part"] is not None for item in parts)
+    assert whole["durationMs"] == whole["meetingDurationMs"] == 4000  # two parts of two seconds
+    assert whole["startedAt"] == whole["meetingStartedAt"] == min(item["startedAt"] for item in parts)
 
 
 def test_an_ordinary_recording_has_no_meeting_reference(app, acme) -> None:  # type: ignore[no-untyped-def]

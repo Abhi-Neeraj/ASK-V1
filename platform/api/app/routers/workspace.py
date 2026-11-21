@@ -30,6 +30,8 @@ def summary(ctx: Authed, db: DbDep, settings: SettingsDep) -> SummaryOut:
     online = sum(1 for d in devices if device_service.presence(d, settings, now) == "online")
 
     visible = recording_service.visible_recordings(ctx).subquery()
+    # "Recordings today" counts recordings as people know them: a long one sent in parts is one.
+    heads = recording_service.heads_only(recording_service.visible_recordings(ctx)).subquery()
     today = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def count(*conditions: ColumnElement[bool]) -> int:
@@ -38,7 +40,10 @@ def summary(ctx: Authed, db: DbDep, settings: SettingsDep) -> SummaryOut:
     return SummaryOut(
         devices_online=online,
         devices_total=len(devices),
-        recordings_today=count(visible.c.uploaded_at >= today),
+        recordings_today=db.scalar(
+            select(func.count()).select_from(heads).where(heads.c.uploaded_at >= today)
+        )
+        or 0,
         in_progress=count(visible.c.state.in_(recording_service.ACTIVE_STATES)),
         needs_review=count(visible.c.state == "needs_review"),
         failed=count(visible.c.state == "failed"),

@@ -32,7 +32,7 @@ def upload(locket, client_id: str, minutes: int, ref: str | None, sequence: int 
 
 
 def parts_by_id(web) -> dict[str, int | None]:  # type: ignore[no-untyped-def]
-    items = web.get("/api/recordings").json()["items"]
+    items = web.get("/api/recordings?includeParts=true").json()["items"]
     return {item["id"]: item["part"] for item in items}
 
 

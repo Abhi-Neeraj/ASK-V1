@@ -1,10 +1,11 @@
 // Receiving a recording from the locket over Bluetooth (spec 5.3). Frames arrive one per notification:
 // START, AUDIO 1..n (IMA ADPCM blocks), END.
 //
-// - The locket records first and sends when the recording is done (2026-11-18), in parts of five minutes, so a
-//   recording under five minutes is ONE part. Audio is handed on in parts of five minutes, each decoded to a 16 kHz
-//   WAV and uploaded as soon as it is complete (a part of five minutes is 9.6 MB; the server takes up to 25 MB).
-//   The server ties the parts of one meeting together and writes one transcript file and one summary for it.
+// - The locket sends while it records (2026-11-21), so the wait after Stop is only the last part. Audio is handed on
+//   in parts of 30 seconds (about 1 MB), each decoded to a 16 kHz WAV and uploaded as soon as it is complete, so the
+//   server is already transcribing while the meeting is still arriving and only the last half minute is left when
+//   it ends. The server ties the parts of one recording together and shows them as ONE item, with one transcript,
+//   one summary and one audio.  (Sending only after Stop took 8 minutes for a 5-minute recording.)
 // - Progress is acknowledged every 32 frames. The END frame is acknowledged (which lets the locket delete the
 //   session from its card) only after every part was saved: a failed save never loses audio.
 // - A gap, a corrupt frame or a wrong-sized block asks the locket to resend from the first missing frame, once
@@ -47,8 +48,8 @@ type Active = {
 };
 
 export class RecordingCapture {
-  /** Five minutes of 16 ms blocks: the same as one part on the locket. */
-  static readonly DEFAULT_BLOCKS_PER_PART = Math.floor((5 * 60 * 1000) / BLOCK_MS);
+  /** Half a minute of 16 ms blocks. */
+  static readonly DEFAULT_BLOCKS_PER_PART = Math.floor((30 * 1000) / BLOCK_MS);
 
   private active: Active | null = null;
   private readonly askedUnknown = new Set<string>();

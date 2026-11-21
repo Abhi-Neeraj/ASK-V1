@@ -79,8 +79,8 @@ constexpr uint32_t kBytesPerSecond = kSampleRate * kChannels * (kBitsPerSample /
 constexpr float kAudioGain = 1.0f;
 constexpr size_t kAudioBufferBytes = 1024;
 // The longest single recording: 6 hours (it was 7000 s, which stopped a recording after 1 h 56 min). At 32 KB/s that is
-// about 690 MB on the memory card, so use a card with at least 1 GB free for a long meeting; the 30 one-minute parts
-// plus five-minute parts after them make 96 parts, within askble::kMaxParts. Not run on a board.
+// about 690 MB on the memory card, so use a card with at least 1 GB free for a long meeting; the 60 half-minute parts
+// plus four-minute parts after them make 142 parts, within askble::kMaxParts. Not run on a board.
 constexpr uint32_t kMaxSessionSeconds = 6 * 3600;
 constexpr uint32_t kMicSilenceTimeoutMs = 5000;
 
@@ -108,9 +108,17 @@ constexpr uint32_t kWriterDrainTimeoutMs = 120000;
 // nothing can stall mid-recording), and every part is five minutes (kLiveParts 0: all parts are kLongPartFactor times
 // kDefaultSegmentSeconds), so a recording under five minutes is ONE part, one item on the website, with its own
 // transcript, summary and audio. Six hours is 72 parts, within askble::kMaxParts.
-constexpr uint32_t kDefaultSegmentSeconds = 60;
-constexpr uint32_t kLiveParts = 0;
-constexpr uint32_t kLongPartFactor = 5;
+//
+// 2026-11-21, back to sending WHILE recording, the owner's goal being a short wait after Stop: a 5-minute recording
+// that was sent only after Stop took 8 minutes (about 3.7 of them over Bluetooth, which carries about 11 KB/s, and
+// about 3 uploading the audio). Sent while recording, only the last part is still on the locket at Stop, so the wait
+// is that part's own transfer, upload and transcript: under a minute. Parts are now 30 seconds for the first 30
+// minutes (kLiveParts 60), then four minutes (kLongPartFactor 8): six hours is 142 parts. The website shows the
+// parts of one recording as ONE item (the server joins them), so the screens look as they always did.
+constexpr bool kSendWhileRecording = true;
+constexpr uint32_t kDefaultSegmentSeconds = 30;
+constexpr uint32_t kLiveParts = 60;
+constexpr uint32_t kLongPartFactor = 8;
 constexpr uint32_t kDefaultMaxClipSeconds = 600;
 constexpr uint32_t kDefaultMaxUploadBytes = 25u * 1024 * 1024;
 constexpr const char* kDirRecording = "/recording";  // a part being written
